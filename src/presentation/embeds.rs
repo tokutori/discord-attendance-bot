@@ -48,7 +48,7 @@ pub fn help_embed(display_name: &str) -> serenity::CreateEmbed {
         )
         .field(
             "🔎 閲覧・集計コマンド",
-            "`/attendance status`\n現在活動中か確認する。\n\n`/attendance history [limit]`\n最近の記録を表示する（1〜20件、既定5件）。\n\n`/attendance month [target]`\n月次集計を表示する。`target` は `YYYY-MM`（省略時は当月）。",
+            "`/attendance status`\n現在活動中か確認する。\n\n`/attendance history [limit]`\n最近の記録を表示する（1〜20件、既定5件）。\n\n`/attendance month [target]`\n合計・活動回数・1回/1日/1週間あたり平均・日別集計を表示する。`target` は `YYYY-MM`（省略時は当月）。日・週平均は当月なら今日を含む経過暦日、過去月なら全日数を基準にする。",
             false,
         )
         .field(
@@ -113,11 +113,6 @@ pub fn history_embed(
 }
 
 pub fn month_embed(display_name: &str, monthly: &MonthlyAttendance) -> serenity::CreateEmbed {
-    let average = if monthly.session_count == 0 {
-        0
-    } else {
-        monthly.total_seconds / monthly.session_count as i64
-    };
     let daily = if monthly.daily_totals.is_empty() {
         "この月の活動記録はない。".into()
     } else {
@@ -143,7 +138,25 @@ pub fn month_embed(display_name: &str, monthly: &MonthlyAttendance) -> serenity:
         .color(DEFAULT_COLOR)
         .field("合計活動時間", format_duration(monthly.total_seconds), true)
         .field("活動回数", format!("{}回", monthly.session_count), true)
-        .field("1回あたり平均", format_duration(average), true)
+        .field(
+            "1回あたり平均",
+            format_duration(monthly.average_per_session()),
+            true,
+        )
+        .field(
+            "1日あたり平均",
+            format!(
+                "{}（{}日基準）",
+                format_duration(monthly.average_per_day()),
+                monthly.elapsed_calendar_days
+            ),
+            true,
+        )
+        .field(
+            "1週間あたり平均",
+            format_duration(monthly.average_per_week()),
+            true,
+        )
         .field("日別", daily, false)
 }
 

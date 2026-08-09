@@ -113,7 +113,7 @@
 <body>
   <header>
     <h1>Discord 活動時間記録 Bot 仕様書</h1>
-    <p class="meta">対象: 鳥人間チームのメンバーごとの活動時間記録<br>実装言語: Rust<br>保存先: SQLite<br>作成日: 2026-08-06</p>
+    <p class="meta">版: v1.0<br>対象: 鳥人間チームのメンバーごとの活動時間記録<br>実装言語: Rust<br>保存先: SQLite<br>作成日: 2026-08-06<br>最終更新日: 2026-08-09</p>
   </header>
 
   <main>
@@ -228,6 +228,11 @@
             <td><code>/attendanceexport export</code></td>
             <td><code>month</code>、<code>mode</code></td>
             <td>指定月の CSV と PDF を preview または publish で出力する。</td>
+          </tr>
+          <tr>
+            <td><code>/attendanceexport userconfig</code></td>
+            <td><code>generation</code>、<code>real_name</code>、<code>role</code></td>
+            <td>出力に使用する本人の代、本名、役割を設定または表示する。</td>
           </tr>
         </tbody>
       </table>
@@ -471,13 +476,19 @@ Bem130
 1回あたり平均
 3時間33分
 
+1日あたり平均
+5時間19分（8日基準）
+
+1週間あたり平均
+37時間15分
+
 日別
 08/01  4時間20分
 08/03  2時間15分
 08/05  6時間10分
 08/06  3時間30分</code></pre>
 
-      <p>月を跨ぐ記録は、対象月に含まれる時間だけを集計する。</p>
+      <p>月を跨ぐ記録は、対象月に含まれる時間だけを集計する。1回あたり平均は合計時間を活動回数で割る。1日あたり平均は、当月では今日を含む経過暦日数、過去月ではその月の全日数を分母とし、1週間あたり平均は1日あたり平均の7日分とする。活動があった日だけを分母にはしない。未来月は経過日数0として両方の平均を0と表示する。</p>
 
       <h3>5.8 <code>/attendance edit</code></h3>
       <p>本人の既存記録を修正する。</p>
@@ -526,11 +537,12 @@ Bem130
         </tbody>
       </table>
 
-      <h3>5.11 <code>/attendanceexport help</code> / <code>/attendanceexport export</code></h3>
+      <h3>5.11 <code>/attendanceexport help</code> / <code>export</code> / <code>userconfig</code></h3>
       <p><code>/attendanceexport help</code> は月次ファイル出力の使い方を Embed で表示する。</p>
       <p><code>/attendanceexport export</code> は <code>month</code> を必須とし、<code>YYYY-MM</code> 形式の指定月について CSV と PDF を同時に生成する。<code>mode</code> は <code>preview</code> または <code>publish</code> で、既定値は <code>preview</code> とする。<code>preview</code> は実行者だけに表示し、<code>publish</code> はサーバー全員に見えるメッセージとして送信する。</p>
+      <p><code>/attendanceexport userconfig</code> は本人の <code>generation</code>（代・整数）、<code>real_name</code>（本名）、<code>role</code>（代表、新入生、班名などの自由記述）を設定する。引数なしでは現在値を ephemeral Embed で表示し、一部の引数だけを指定した場合は指定していない設定を保持する。設定結果もEmbedで各項目を説明する。</p>
       <h4>表の構造</h4>
-      <p>表の縦方向は対象月に記録があるユーザー、横方向は対象月の日数にユーザー名列と合計列を加えたものとする。活動時間があるセルは <code>時間:分</code> 形式で表示する。PDFの活動時間0セルは空欄、CSVの活動時間0セルは <code>0:00</code> とする。活動中の記録は出力時点までを暫定値として含める。</p>
+      <p>表の縦方向は対象月に記録があるユーザー、横方向は対象月の日数にユーザー情報列と合計列を加えたものとする。CSVでは代・本名・役割・Discord表示名を個別の列とし、PDFではユーザー情報欄にまとめる。本名未設定時はDiscord表示名を使用する。活動時間があるセルは <code>時間:分</code> 形式で表示する。PDFの活動時間0セルは空欄、CSVの活動時間0セルは <code>0:00</code> とする。PDFの文字はセル内で上下中央揃えとする。活動中の記録は出力時点までを暫定値として含める。</p>
       <h4>注記</h4>
       <p>指定月がまだ終了していない場合は、暫定集計であることを応答と PDF に記載する。指定月の翌月1日に出力した場合は、ユーザーが修正する可能性があるため確定版ではないことを応答と PDF に記載する。</p>
     </section>
@@ -548,6 +560,7 @@ Bem130
 
     <section>
       <h2>7. SQLite schema</h2>
+      <p>v1.0では本番運用前の設計見直しとしてmigration履歴をリセットし、<code>migrations/0001_initial_schema.sql</code> から新規DBを作成する。v0.0のテストDBとはmigration互換性を持たせないため、Bot停止後に旧テストDBと対応する <code>-wal</code>・<code>-shm</code> を削除して再作成する。本番運用開始後のmigrationにはこの方法を使用しない。</p>
       <pre><code>CREATE TABLE attendance_sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
 
@@ -582,9 +595,10 @@ ON attendance_sessions (
     started_at DESC
 )
 WHERE deleted_at IS NULL;</code></pre>
-    <p><code>revert</code> 用に <code>attendance_operations</code> テーブルも使用する。各成功した変更操作について、guild・user・対象記録・操作種別・操作前後の開始時刻・終了時刻・備考・削除時刻を保存し、<code>reverted_at</code> で取り消し済みかを管理する。取り消し処理は最新の未取り消し操作を対象とし、現在状態が保存済みの操作後状態と一致しない場合は安全のため実行しない。</p>
-      <p><code>edit</code>、<code>delete</code>、<code>revert</code> の確認要求は <code>attendance_confirmations</code> に保存する。確認IDは5文字で発行から5分間有効、要求者の guild・user に限定し、確定後または状態不一致時は再利用できない。</p>
-      <p>自動終了の対象と通知状態は <code>attendance_auto_ends</code> に保存する。自動終了時刻、適用時刻、通知済み時刻、ユーザー入力による訂正時刻を記録し、同じ自動終了を二重適用しない。</p>
+      <p><code>attendance_changes</code> は、各成功した変更操作についてguild・user・対象記録・操作種別・操作前後の開始時刻・終了時刻・備考・削除時刻を保存し、<code>reverted_at</code> で取り消し済みかを管理する。取り消し処理は最新の未取り消し変更を対象とし、現在状態が保存済みの変更後状態と一致しない場合は安全のため実行しない。</p>
+      <p><code>pending_attendance_actions</code> は <code>edit</code>、<code>delete</code>、<code>revert</code> の確認要求を保存する。確認IDは5文字で発行から5分間有効、要求者のguild・userに限定し、確定後または状態不一致時は再利用できない。<code>change_id</code> によってrevert対象の変更へ関連付ける。</p>
+      <p><code>attendance_auto_end_events</code> は自動終了時刻、適用時刻、通知済み時刻、ユーザー入力による訂正時刻を保存し、同じ自動終了を二重適用しない。</p>
+      <p><code>attendance_user_profiles</code> はguild・userごとに代、本名、役割を保存する。Discord user IDを本人識別の主キーとし、表示名や本名は識別子として使用しない。</p>
     </section>
 
     <section>
@@ -604,7 +618,7 @@ WHERE deleted_at IS NULL;</code></pre>
 
     <section>
       <h2>9. 月間集計</h2>
-      <p>対象月に重なる終了済み記録を取得し、月範囲との重複時間だけを加算する。</p>
+      <p>対象月に重なる終了済み記録を取得し、月範囲との重複時間だけを加算する。活動中の記録は <code>/attendance month</code> の確定済み集計には含めない。</p>
 
       <pre><code>SELECT
     id,
@@ -626,8 +640,9 @@ ORDER BY started_at ASC;</code></pre>
       <pre><code>effective_start = max(started_at, month_start)
 effective_end   = min(ended_at, month_end)
 duration        = max(effective_end - effective_start, 0)</code></pre>
+      <p>1回あたり平均は <code>total / session_count</code>、1日あたり平均は <code>total / elapsed_calendar_days</code>、1週間あたり平均は <code>total * 7 / elapsed_calendar_days</code> とする。秒未満は整数除算で切り捨てる。<code>elapsed_calendar_days</code> は当月では今日を含む経過暦日、過去月では全日数、未来月では0とする。</p>
       <h3>9.1 月次ファイル出力</h3>
-      <p><code>/attendanceexport export</code> は同じ月内重複計算をユーザー別・日別に展開し、CSV と PDF にする。出力表はユーザー行、日付列、合計列で構成する。</p>
+      <p><code>/attendanceexport export</code> は同じ月内重複計算をユーザー別・日別に展開し、<code>attendance_user_profiles</code> の代・本名・役割を反映したCSVとPDFにする。ファイル出力では活動中の記録も出力時点までの暫定値として含める。出力表はユーザー行、日付列、合計列で構成する。</p>
       <p>PDF 生成には <a href="https://docs.rs/printpdf/latest/printpdf/">printpdf</a> を採用する。表の配置・改ページ・文字レイアウトは Bot 側で明示的に制御し、保存時に <code>PdfSaveOptions.subset_fonts = true</code> を指定する。これにより、PDF に現れる文字のグリフだけを TTF から埋め込み、CJK フォント全体の埋め込みによる添付サイズ増大を避ける。日本語フォントは環境依存のため、<code>ATTENDANCE_PDF_FONT_PATH</code> で TTF を指定できる。</p>
       <p><a href="https://docs.rs/genpdf/latest/genpdf/">genpdf</a> は <a href="https://docs.rs/genpdf/latest/genpdf/elements/">TableLayout</a> など高レベル API が便利だが、今回の使用文字だけのサブセット埋め込みを明示的に保証しにくいため採用しない。<a href="https://docs.rs/lopdf/latest/lopdf/">lopdf</a> / <a href="https://docs.rs/lopdf-table/latest/lopdf_table/">lopdf-table</a> は PDF 構造や表の細かな後処理が必要になった場合の候補とする。</p>
     </section>
@@ -638,6 +653,7 @@ duration        = max(effective_end - effective_start, 0)</code></pre>
         <li>通常の操作結果は原則として ephemeral response とする。</li>
         <li>Slash Command の利用者向け応答は、成功結果・想定内の入力エラー・権限エラーを含め、原則として本人だけが見られる ephemeral Embed を使用する。</li>
         <li><code>history</code>、<code>month</code>、<code>help</code> は専用レイアウトの Embed を使用する。</li>
+        <li><code>/attendanceexport userconfig</code> は現在値または更新後の代・本名・役割を ephemeral Embed で表示する。</li>
         <li><code>/attendanceexport export</code> は <code>preview</code> では ephemeral、<code>publish</code> では公開メッセージとして CSV と PDF を添付する。</li>
         <li>コマンドエラーは入力形式、PDFフォント、添付サイズ、データベース、Discord通信などの種別に分類し、原因と対処を Embed で説明する。秘密情報や認証情報は表示しない。</li>
         <li><code>revert</code> は直前の成功した変更操作を1件取り消し、操作内容と対象記録を Embed で説明する。<code>revert</code> 自体は履歴に積まれないため、連続実行では過去の変更を順に取り消せる。</li>
@@ -649,42 +665,49 @@ duration        = max(effective_end - effective_start, 0)</code></pre>
     </section>
 
     <section>
-      <h2>11. 実装上の推奨モジュール分割</h2>
+      <h2>11. v1.0のモジュール分割</h2>
       <pre><code>src/
 ├── main.rs
+├── lib.rs
+├── framework_error.rs
 ├── commands/
 │   ├── mod.rs
 │   ├── attendance.rs
+│   ├── attendance/
+│   │   ├── common.rs
+│   │   ├── daily.rs
+│   │   ├── guarded.rs
+│   │   └── query.rs
 │   └── attendance_export.rs
 ├── attendance/
 │   ├── mod.rs
 │   ├── model.rs
 │   ├── service.rs
 │   └── aggregation.rs
+├── attendance_export.rs
+├── attendance_export/
+│   └── pdf.rs
 ├── repository/
 │   ├── mod.rs
-│   └── sqlite.rs
-└── presentation/
+│   ├── model.rs
+│   ├── session.rs
+│   ├── change.rs
+│   ├── confirmation.rs
+│   ├── auto_end.rs
+│   ├── profile.rs
+│   └── tests.rs
+├── presentation/
     ├── mod.rs
     ├── embeds.rs
-    └── status_topic.rs</code></pre>
+    └── status_topic.rs
+└── time.rs</code></pre>
 
-      <p>Discord interaction、domain logic、SQLite 操作、Embed 生成を分離する。月間集計や時間重複計算は Discord に依存しない純粋関数として実装する。</p>
+      <p><code>main.rs</code> は起動と依存関係の組み立てに限定する。<code>commands</code> はDiscord interaction、<code>attendance</code> はdomain logic、<code>repository</code> は責務別のSQLite操作、<code>presentation</code> はEmbedとステータス表示、<code>framework_error.rs</code> は利用者向けエラー分類を担当する。月間集計や時間重複計算はDiscordに依存しない純粋関数として実装する。</p>
     </section>
 
     <section>
-      <h2>12. 初期実装の優先順位</h2>
-      <ol>
-        <li><code>/attendance help</code></li>
-        <li><code>/attendance start</code></li>
-        <li><code>/attendance end</code></li>
-        <li><code>/attendance continue</code></li>
-        <li><code>/attendance status</code></li>
-        <li><code>/attendance history</code></li>
-        <li><code>/attendance month</code></li>
-        <li><code>/attendance edit</code></li>
-        <li><code>/attendance delete</code></li>
-      </ol>
+      <h2>12. 品質確認</h2>
+      <p>変更後は <code>cargo fmt --check</code>、<code>cargo test</code>、<code>cargo clippy --all-targets --all-features -- -D warnings</code> を実行する。外部Discord接続を伴う <code>cargo run</code> は自動検証では実行せず、単体テストには秘密情報を使用しない。</p>
     </section>
 
     <section>

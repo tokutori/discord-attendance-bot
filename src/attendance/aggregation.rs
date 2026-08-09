@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Duration, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Utc};
 
 use crate::{
     attendance::{AttendanceSession, DailyAttendance, MonthlyAttendance, YearMonth},
@@ -17,6 +17,7 @@ pub fn overlap_seconds(started_at: i64, ended_at: i64, range_start: i64, range_e
 pub fn aggregate_monthly(
     sessions: &[AttendanceSession],
     year_month: YearMonth,
+    now: DateTime<Utc>,
 ) -> anyhow::Result<MonthlyAttendance> {
     let (month_start, month_end) = month_bounds(year_month)?;
     let mut daily: BTreeMap<chrono::NaiveDate, i64> = BTreeMap::new();
@@ -53,10 +54,28 @@ pub fn aggregate_monthly(
         }
     }
 
+    let first_date = NaiveDate::from_ymd_opt(year_month.year, year_month.month, 1)
+        .ok_or_else(|| anyhow::anyhow!("invalid aggregation month"))?;
+    let next_date = if year_month.month == 12 {
+        NaiveDate::from_ymd_opt(year_month.year + 1, 1, 1)
+    } else {
+        NaiveDate::from_ymd_opt(year_month.year, year_month.month + 1, 1)
+    }
+    .ok_or_else(|| anyhow::anyhow!("invalid next aggregation month"))?;
+    let local_today = now.with_timezone(&DISPLAY_TIMEZONE).date_naive();
+    let elapsed_calendar_days = if local_today < first_date {
+        0
+    } else if local_today >= next_date {
+        (next_date - first_date).num_days() as u32
+    } else {
+        local_today.day()
+    };
+
     Ok(MonthlyAttendance {
         year_month,
         total_seconds: total,
         session_count: count,
+        elapsed_calendar_days,
         daily_totals: daily
             .into_iter()
             .map(|(date, total_seconds)| DailyAttendance {
@@ -109,10 +128,60 @@ mod tests {
             .single()
             .unwrap()
             .timestamp();
-        let result = aggregate_monthly(&[session(start, end)], ym).unwrap();
+        let now = tz
+            .with_ymd_and_hms(2026, 8, 7, 12, 0, 0)
+            .single()
+            .unwrap()
+            .with_timezone(&Utc);
+        let result = aggregate_monthly(&[session(start, end)], ym, now).unwrap();
         assert_eq!(result.total_seconds, 4 * 3600);
+        assert_eq!(result.elapsed_calendar_days, 7);
+        assert_eq!(result.average_per_day(), result.total_seconds / 7);
+        assert_eq!(result.average_per_week(), result.total_seconds);
         assert_eq!(result.daily_totals.len(), 2);
         assert_eq!(result.daily_totals[0].total_seconds, 2 * 3600);
         assert_eq!(result.daily_totals[1].total_seconds, 2 * 3600);
+    }
+
+    #[test]
+    fn past_month_uses_all_calendar_days() {
+        let result = aggregate_monthly(
+            &[],
+            YearMonth {
+                year: 2024,
+                month: 2,
+            },
+            DISPLAY_TIMEZONE
+                .with_ymd_and_hms(2026, 8, 9, 12, 0, 0)
+                .single()
+                .unwrap()
+                .with_timezone(&Utc),
+        )
+        .unwrap();
+
+        assert_eq!(result.elapsed_calendar_days, 29);
+        assert_eq!(result.average_per_day(), 0);
+        assert_eq!(result.average_per_week(), 0);
+    }
+
+    #[test]
+    fn future_month_has_no_elapsed_calendar_days() {
+        let result = aggregate_monthly(
+            &[],
+            YearMonth {
+                year: 2026,
+                month: 9,
+            },
+            DISPLAY_TIMEZONE
+                .with_ymd_and_hms(2026, 8, 9, 12, 0, 0)
+                .single()
+                .unwrap()
+                .with_timezone(&Utc),
+        )
+        .unwrap();
+
+        assert_eq!(result.elapsed_calendar_days, 0);
+        assert_eq!(result.average_per_day(), 0);
+        assert_eq!(result.average_per_week(), 0);
     }
 }

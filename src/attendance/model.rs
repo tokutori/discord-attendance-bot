@@ -41,5 +41,32 @@ pub struct MonthlyAttendance {
     pub year_month: YearMonth,
     pub total_seconds: i64,
     pub session_count: usize,
+    pub elapsed_calendar_days: u32,
     pub daily_totals: Vec<DailyAttendance>,
+}
+
+impl MonthlyAttendance {
+    pub fn average_per_session(&self) -> i64 {
+        if self.session_count == 0 {
+            0
+        } else {
+            self.total_seconds / self.session_count as i64
+        }
+    }
+
+    pub fn average_per_day(&self) -> i64 {
+        if self.elapsed_calendar_days == 0 {
+            0
+        } else {
+            self.total_seconds / i64::from(self.elapsed_calendar_days)
+        }
+    }
+
+    pub fn average_per_week(&self) -> i64 {
+        if self.elapsed_calendar_days == 0 {
+            0
+        } else {
+            self.total_seconds.saturating_mul(7) / i64::from(self.elapsed_calendar_days)
+        }
+    }
 }
