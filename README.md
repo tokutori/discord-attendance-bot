@@ -36,24 +36,53 @@ Bot は message content を読まないため、Privileged Gateway Intents は�
 Copy-Item .env.example .env
 ```
 
-`.env` を編集する。
+`.env` を編集する。テスト用と本番用のGuild IDおよびSQLite DBを分ける。
 
 ```dotenv
 DISCORD_TOKEN=...
 DISCORD_TEST_GUILD_ID=...
-DATABASE_URL=sqlite://attendance.db
+DISCORD_RELEASE_GUILD_ID=...
+DATABASE_URL_TEST=sqlite://attendance-test.db
+DATABASE_URL_RELEASE=sqlite://attendance-release.db
+ATTENDANCE_STATUS_CHANNEL_ID_TEST=...
+ATTENDANCE_STATUS_CHANNEL_ID_RELEASE=...
 RUST_LOG=discord_attendance_bot=info,poise=info,serenity=info
 ```
 
-開発中は `DISCORD_TEST_GUILD_ID` を設定する。Guild command は反映が速い。全サーバー向けに公開する段階では、この値を削除または空欄にすると global command を登録する。
+`test` と `release` の起動引数によって、使用するGuild IDとDBが切り替わる。どちらもGuild commandとして登録されるため、指定したサーバーだけで利用できる。
+
+各サーバーに活動状況表示用のテキストチャンネルを1つ用意し、そのチャンネルIDを設定する。Botには対象チャンネルのTopicを編集できる `Manage Channels` 権限が必要である。可能であればサーバー全体ではなく、専用チャンネルへの権限上書きで付与する。
 
 ## 起動
 
+テスト環境:
+
 ```powershell
-cargo run --release
+cargo run -- test
 ```
 
-初回起動時に SQLite database と migration table が自動作成される。
+本番環境:
+
+```powershell
+cargo run --release -- release
+```
+
+引数は `test` または `release` のいずれかが必須である。不正な引数や未指定の場合は起動しない。
+
+初回起動時に、選択したモードのSQLite databaseとmigration tableが自動作成される。
+
+BotのActivityは活動記録の変更時に即時更新する。専用チャンネルのTopicはBot起動時および10分ごとに更新し、その周期更新時にはActivityも同時に更新する。
+
+Activityの種別は、Botが活動状況を監視している意味に合わせて `Watching` を使用する。
+
+```text
+:green_circle: 現在2名活動中
+(1) Bem130
+(2) Alice
+(最終更新: 2026年8月9日 21:30)
+```
+
+ActivityはDiscordの表示上限に合わせ、128文字を超える部分を省略する。Topicは1024文字まで保持する。
 
 ## テストと静的検査
 
@@ -65,7 +94,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 ## データベース
 
-既定ではプロジェクト直下に `attendance.db` が作成される。WAL mode を使用するため、実行中は `attendance.db-wal` と `attendance.db-shm` が存在する場合がある。
+テスト環境では `attendance-test.db`、本番環境では `attendance-release.db` が作成される。WAL modeを使用するため、実行中はそれぞれのDBに対応する `-wal` と `-shm` ファイルが存在する場合がある。
 
 バックアップは Bot 停止中に `attendance.db` をコピーするのが簡単である。稼働中に取得する場合は SQLite CLI の `.backup` または `VACUUM INTO` を使用する。
 

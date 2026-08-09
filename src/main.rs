@@ -1,7 +1,7 @@
 use std::{env, str::FromStr};
 
 use anyhow::Context as _;
-use discord_attendance_bot::{Data, commands};
+use discord_attendance_bot::{Data, channel_status, commands, config};
 use poise::serenity_prelude as serenity;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use tracing::info;
@@ -9,6 +9,12 @@ use tracing::info;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
+    let args: Vec<String> = env::args().collect();
+    let mode = config::parse_mode(&args)?;
+    let app_config = config::AppConfig::from_env(mode)?;
+    let guild_id = app_config.guild_id;
+    let status_channel_id = app_config.status_channel_id;
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -16,16 +22,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let token = env::var("DISCORD_TOKEN").context("DISCORD_TOKEN is not set")?;
-    let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://attendance.db".into());
-    let test_guild_id = env::var("DISCORD_TEST_GUILD_ID")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.parse::<u64>())
-        .transpose()
-        .context("DISCORD_TEST_GUILD_ID must be a Discord snowflake")?;
-
-    let options = SqliteConnectOptions::from_str(&database_url)?
+    let options = SqliteConnectOptions::from_str(&app_config.database_url)?
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal)
@@ -52,26 +49,36 @@ async fn main() -> anyhow::Result<()> {
         .setup(move |ctx, ready, framework| {
             let database = database.clone();
             Box::pin(async move {
-                info!(bot = %ready.user.name, id = %ready.user.id, "connected to Discord");
-                if let Some(guild_id) = test_guild_id {
-                    poise::builtins::register_in_guild(
-                        ctx,
-                        &framework.options().commands,
-                        serenity::GuildId::new(guild_id),
-                    )
-                    .await?;
-                    info!(guild_id, "registered guild commands");
-                } else {
-                    poise::builtins::register_globally(ctx, &framework.options().commands).await?;
-                    info!("registered global commands");
-                }
-                Ok(Data { database })
+                info!(
+                    bot = %ready.user.name,
+                    id = %ready.user.id,
+                    mode = mode.as_str(),
+                    guild_id,
+                    "connected to Discord"
+                );
+                poise::builtins::register_in_guild(
+                    ctx,
+                    &framework.options().commands,
+                    serenity::GuildId::new(guild_id),
+                )
+                .await?;
+                info!(mode = mode.as_str(), guild_id, "registered guild commands");
+                channel_status::spawn_periodic_refresh(
+                    ctx,
+                    database.clone(),
+                    guild_id as i64,
+                    status_channel_id,
+                );
+                Ok(Data {
+                    database,
+                    status_channel_id,
+                })
             })
         })
         .build();
 
     let intents = serenity::GatewayIntents::empty();
-    let mut client = serenity::ClientBuilder::new(token, intents)
+    let mut client = serenity::ClientBuilder::new(app_config.token, intents)
         .framework(framework)
         .await
         .context("failed to create Discord client")?;

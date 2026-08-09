@@ -137,6 +137,20 @@
   └─ /attendance ...
        └─ Rust Bot
             └─ SQLite</code></pre>
+
+      <h3>2.1 運用モード</h3>
+      <p>Bot は起動時引数によって <code>test</code> または <code>release</code> の運用モードを選択する。各モードは異なる Discord guild command の登録先と SQLite データベースを使用する。</p>
+      <table>
+        <thead>
+          <tr><th>モード</th><th>Guild ID</th><th>データベース</th><th>起動例</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>test</code></td><td><code>DISCORD_TEST_GUILD_ID</code></td><td><code>DATABASE_URL_TEST</code></td><td><code>cargo run -- test</code></td></tr>
+          <tr><td><code>release</code></td><td><code>DISCORD_RELEASE_GUILD_ID</code></td><td><code>DATABASE_URL_RELEASE</code></td><td><code>cargo run --release -- release</code></td></tr>
+        </tbody>
+      </table>
+      <p>引数は必須であり、未指定または不正な値の場合は起動しない。両モードとも指定した guild にのみ command を登録し、global command は使用しない。</p>
+      <p>各モードでは <code>ATTENDANCE_STATUS_CHANNEL_ID_TEST</code> または <code>ATTENDANCE_STATUS_CHANNEL_ID_RELEASE</code> で指定した専用テキストチャンネルの Topic と Bot の Activity を、活動中メンバーの人数・表示名・最終更新時刻で更新する。Activity の種別は、Bot が活動状況を監視している意味に合わせて <code>Watching</code> を使用する。Activity は活動記録の変更時に即時更新し、Topic は Bot 起動時および10分ごとに更新する。Topic の周期更新時には Activity も同時に更新する。Activity は 128 文字を超える部分を省略し、Topic は 1024 文字まで保持する。</p>
     </section>
 
     <section>

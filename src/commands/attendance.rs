@@ -4,7 +4,7 @@ use poise::CreateReply;
 use crate::{
     Context, Error,
     attendance::{self, ContinueOutcome, EndOutcome, StartOutcome},
-    presentation, repository,
+    channel_status, presentation, repository,
     time::{self, DISPLAY_TIMEZONE, format_datetime, format_duration},
 };
 
@@ -52,6 +52,36 @@ async fn send_text(ctx: Context<'_>, content: impl Into<String>) -> Result<(), E
     Ok(())
 }
 
+async fn defer_ephemeral(ctx: Context<'_>) -> Result<(), Error> {
+    ctx.defer_ephemeral().await?;
+    Ok(())
+}
+
+async fn refresh_status_activity(ctx: Context<'_>, reason: &'static str) {
+    let Some(guild_id) = ctx.guild_id() else {
+        return;
+    };
+    match channel_status::refresh_activity(
+        ctx.serenity_context(),
+        &ctx.data().database,
+        guild_id.get() as i64,
+    )
+    .await
+    {
+        Ok(active_count) => {
+            tracing::info!(
+                reason,
+                guild_id = guild_id.get(),
+                active_count,
+                "updated attendance activity"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(%error, reason, guild_id = guild_id.get(), "failed to update attendance activity");
+        }
+    }
+}
+
 #[poise::command(slash_command, guild_only)]
 pub async fn start(
     ctx: Context<'_>,
@@ -60,6 +90,7 @@ pub async fn start(
     #[max_length = 500]
     note: Option<String>,
 ) -> Result<(), Error> {
+    defer_ephemeral(ctx).await?;
     let (guild_id, user_id) = ids(ctx)?;
     let (now, started_at) = now_and_optional_time(at.as_deref())?;
     let outcome = attendance::start(
@@ -91,7 +122,9 @@ pub async fn start(
             text
         }
     };
-    send_text(ctx, content).await
+    refresh_status_activity(ctx, "start").await;
+    send_text(ctx, content).await?;
+    Ok(())
 }
 
 #[poise::command(slash_command, guild_only, rename = "end")]
@@ -102,6 +135,7 @@ pub async fn end(
     #[max_length = 500]
     note: Option<String>,
 ) -> Result<(), Error> {
+    defer_ephemeral(ctx).await?;
     let (guild_id, user_id) = ids(ctx)?;
     let (now, ended_at) = now_and_optional_time(at.as_deref())?;
     let content = match attendance::end(
@@ -132,11 +166,14 @@ pub async fn end(
             "現在、活動中の記録はない。\n過去の活動記録も存在しない。".into()
         }
     };
-    send_text(ctx, content).await
+    refresh_status_activity(ctx, "end").await;
+    send_text(ctx, content).await?;
+    Ok(())
 }
 
 #[poise::command(slash_command, guild_only, rename = "continue")]
 pub async fn continue_activity(ctx: Context<'_>) -> Result<(), Error> {
+    defer_ephemeral(ctx).await?;
     let (guild_id, user_id) = ids(ctx)?;
     let now = Utc::now().timestamp();
     let content = match attendance::continue_activity(&ctx.data().database, guild_id, user_id, now)
@@ -160,11 +197,14 @@ pub async fn continue_activity(ctx: Context<'_>) -> Result<(), Error> {
         ),
         ContinueOutcome::NothingToContinue => "継続できる直近の活動記録がない。".into(),
     };
-    send_text(ctx, content).await
+    refresh_status_activity(ctx, "continue").await;
+    send_text(ctx, content).await?;
+    Ok(())
 }
 
 #[poise::command(slash_command, guild_only)]
 pub async fn status(ctx: Context<'_>) -> Result<(), Error> {
+    defer_ephemeral(ctx).await?;
     let (guild_id, user_id) = ids(ctx)?;
     let now = Utc::now().timestamp();
     let content = match repository::open_session(&ctx.data().database, guild_id, user_id).await? {
@@ -193,6 +233,7 @@ pub async fn history(
     #[max = 20]
     limit: Option<i64>,
 ) -> Result<(), Error> {
+    defer_ephemeral(ctx).await?;
     let (guild_id, user_id) = ids(ctx)?;
     let sessions =
         repository::history(&ctx.data().database, guild_id, user_id, limit.unwrap_or(5)).await?;
@@ -214,6 +255,7 @@ pub async fn month(
     ctx: Context<'_>,
     #[description = "対象月（YYYY-MM）。省略時は当月"] target: Option<String>,
 ) -> Result<(), Error> {
+    defer_ephemeral(ctx).await?;
     let (guild_id, user_id) = ids(ctx)?;
     let ym = match target {
         Some(v) => time::parse_year_month(&v)?,
@@ -252,6 +294,7 @@ pub async fn edit(
     #[max_length = 500]
     note: Option<String>,
 ) -> Result<(), Error> {
+    defer_ephemeral(ctx).await?;
     if start.is_none() && end.is_none() && note.is_none() {
         return send_text(
             ctx,
@@ -312,6 +355,7 @@ pub async fn edit(
         Utc::now().timestamp(),
     )
     .await?;
+    refresh_status_activity(ctx, "edit").await;
     send_text(ctx, format!("記録 #{} を修正した。", record)).await
 }
 
@@ -321,6 +365,7 @@ pub async fn delete(
     #[description = "削除する記録ID"] record: i64,
     #[description = "削除確認"] confirm: bool,
 ) -> Result<(), Error> {
+    defer_ephemeral(ctx).await?;
     if !confirm {
         return send_text(
             ctx,
@@ -341,6 +386,7 @@ pub async fn delete(
     {
         send_text(ctx, "指定した記録が存在しないか、自分の記録ではない。").await
     } else {
+        refresh_status_activity(ctx, "delete").await;
         send_text(ctx, format!("記録 #{} を削除した。", record)).await
     }
 }

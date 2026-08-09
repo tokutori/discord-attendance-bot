@@ -17,6 +17,16 @@ pub async fn open_session(
         .bind(guild_id).bind(user_id).fetch_optional(pool).await
 }
 
+pub async fn active_sessions(
+    pool: &SqlitePool,
+    guild_id: i64,
+) -> Result<Vec<AttendanceSession>, sqlx::Error> {
+    sqlx::query_as("SELECT * FROM attendance_sessions WHERE guild_id = ? AND ended_at IS NULL AND deleted_at IS NULL ORDER BY started_at ASC")
+        .bind(guild_id)
+        .fetch_all(pool)
+        .await
+}
+
 pub async fn latest_completed(
     pool: &SqlitePool,
     guild_id: i64,
