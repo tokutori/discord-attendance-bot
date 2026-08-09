@@ -57,6 +57,21 @@ pub fn parse_today_time(input: &str, now_utc: DateTime<Utc>) -> Result<i64, Pars
     local_to_timestamp(date.and_time(time))
 }
 
+pub fn parse_most_recent_time(input: &str, now_utc: DateTime<Utc>) -> Result<i64, ParseTimeError> {
+    let time =
+        NaiveTime::parse_from_str(input, "%H:%M").map_err(|_| ParseTimeError::InvalidTime)?;
+    let local_now = now_utc.with_timezone(&DISPLAY_TIMEZONE);
+    let mut date = local_now.date_naive();
+    let today = local_to_timestamp(date.and_time(time))?;
+    if today <= now_utc.timestamp() {
+        return Ok(today);
+    }
+    date = date
+        .pred_opt()
+        .ok_or(ParseTimeError::AmbiguousOrInvalidLocalTime)?;
+    local_to_timestamp(date.and_time(time))
+}
+
 pub fn parse_full_datetime(input: &str) -> Result<i64, ParseTimeError> {
     let value = NaiveDateTime::parse_from_str(input, "%Y-%m-%d %H:%M")
         .map_err(|_| ParseTimeError::InvalidDateTime)?;
@@ -142,8 +157,14 @@ pub fn auto_end_timestamp(started_at: i64, now: DateTime<Utc>) -> Option<i64> {
     if started.date_naive() >= local_now.date_naive() {
         return None;
     }
-    let cutoff = local_to_timestamp(started.date_naive().and_hms_opt(21, 0, 0).unwrap()).ok()?;
-    (cutoff >= started_at && cutoff <= now.timestamp()).then_some(cutoff)
+    let cutoff_time = NaiveTime::from_hms_opt(21, 0, 0).unwrap();
+    let cutoff_date = if started.time() <= cutoff_time {
+        started.date_naive()
+    } else {
+        started.date_naive().succ_opt()?
+    };
+    let cutoff = local_to_timestamp(cutoff_date.and_time(cutoff_time)).ok()?;
+    (cutoff <= now.timestamp()).then_some(cutoff)
 }
 
 #[cfg(test)]
@@ -172,6 +193,16 @@ mod tests {
     }
 
     #[test]
+    fn parses_future_clock_time_as_previous_day_for_end() {
+        let now = Tokyo
+            .with_ymd_and_hms(2026, 8, 9, 0, 5, 0)
+            .unwrap()
+            .with_timezone(&Utc);
+        let ts = parse_most_recent_time("20:45", now).unwrap();
+        assert_eq!(format_datetime(ts), "2026年8月8日 20:45");
+    }
+
+    #[test]
     fn calculates_previous_day_auto_end_at_21() {
         let started = Tokyo
             .with_ymd_and_hms(2026, 8, 8, 18, 0, 0)
@@ -190,5 +221,32 @@ mod tests {
             Some(expected)
         );
         assert_eq!(auto_end_timestamp(started.timestamp(), started), None);
+    }
+
+    #[test]
+    fn start_after_21_auto_ends_at_next_21() {
+        let started = Tokyo
+            .with_ymd_and_hms(2026, 8, 8, 21, 1, 0)
+            .unwrap()
+            .with_timezone(&Utc);
+        let before_cutoff = Tokyo
+            .with_ymd_and_hms(2026, 8, 9, 0, 0, 1)
+            .unwrap()
+            .with_timezone(&Utc);
+        let after_cutoff = Tokyo
+            .with_ymd_and_hms(2026, 8, 10, 0, 0, 1)
+            .unwrap()
+            .with_timezone(&Utc);
+
+        assert_eq!(auto_end_timestamp(started.timestamp(), before_cutoff), None);
+        assert_eq!(
+            auto_end_timestamp(started.timestamp(), after_cutoff),
+            Some(
+                Tokyo
+                    .with_ymd_and_hms(2026, 8, 9, 21, 0, 0)
+                    .unwrap()
+                    .timestamp()
+            )
+        );
     }
 }

@@ -51,6 +51,7 @@ mod tests {
             display_name: display_name.into(),
             started_at: 0,
             ended_at: None,
+            open_since: Some(0),
             note: None,
             created_at: 0,
             updated_at: 0,

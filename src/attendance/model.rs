@@ -9,6 +9,7 @@ pub struct AttendanceSession {
     pub display_name: String,
     pub started_at: i64,
     pub ended_at: Option<i64>,
+    pub open_since: Option<i64>,
     pub note: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,

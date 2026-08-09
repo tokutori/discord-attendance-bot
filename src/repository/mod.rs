@@ -4,6 +4,7 @@ mod confirmation;
 mod model;
 mod profile;
 mod session;
+mod transaction;
 pub use auto_end::*;
 pub use change::*;
 pub use confirmation::*;

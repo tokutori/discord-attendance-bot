@@ -8,7 +8,10 @@ use sqlx::{FromRow, Sqlite, SqlitePool, Transaction};
 
 use super::{
     ConfirmationInput, ConfirmationRequest, ConfirmationResult, SnapshotRow,
+    auto_end::{mark_active_auto_end_corrected, restore_auto_end_for_snapshot},
     change::{ChangeInput, ChangeRow, insert_change, matches_after},
+    session::has_session_overlap,
+    transaction::begin_immediate,
 };
 
 pub const CONFIRMATION_TTL_SECONDS: i64 = 5 * 60;
@@ -21,6 +24,7 @@ struct ConfirmationRow {
     change_id: Option<i64>,
     expected_started_at: i64,
     expected_ended_at: Option<i64>,
+    expected_open_since: Option<i64>,
     expected_note: Option<String>,
     expected_deleted_at: Option<i64>,
     target_started_at: Option<i64>,
@@ -63,7 +67,7 @@ pub async fn create_confirmation(
     user_id: i64,
     input: ConfirmationInput<'_>,
 ) -> Result<ConfirmationRequest, sqlx::Error> {
-    let mut tx = pool.begin().await?;
+    let mut tx = begin_immediate(pool).await?;
     let expires_at = input.requested_at + CONFIRMATION_TTL_SECONDS;
     sqlx::query(
         "DELETE FROM pending_attendance_actions
@@ -90,10 +94,10 @@ pub async fn create_confirmation(
         let result = sqlx::query(
             "INSERT INTO pending_attendance_actions (
                 guild_id, user_id, code, action, session_id, change_id,
-                expected_started_at, expected_ended_at, expected_note, expected_deleted_at,
+                expected_started_at, expected_ended_at, expected_open_since, expected_note, expected_deleted_at,
                 target_started_at, target_ended_at, target_note,
                 requested_at, expires_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(guild_id)
         .bind(user_id)
@@ -103,6 +107,7 @@ pub async fn create_confirmation(
         .bind(input.change_id)
         .bind(input.expected.started_at)
         .bind(input.expected.ended_at)
+        .bind(input.expected.open_since)
         .bind(input.expected.note.as_deref())
         .bind(input.expected.deleted_at)
         .bind(input.target_started_at)
@@ -158,10 +163,10 @@ pub async fn confirm_confirmation(
     code: &str,
     now: i64,
 ) -> Result<ConfirmationResult, sqlx::Error> {
-    let mut tx = pool.begin().await?;
+    let mut tx = begin_immediate(pool).await?;
     let Some(confirmation) = sqlx::query_as::<_, ConfirmationRow>(
         "SELECT id, action, session_id, change_id,
-                expected_started_at, expected_ended_at, expected_note, expected_deleted_at,
+                expected_started_at, expected_ended_at, expected_open_since, expected_note, expected_deleted_at,
                 target_started_at, target_ended_at, target_note,
                 expires_at, consumed_at
          FROM pending_attendance_actions
@@ -179,11 +184,13 @@ pub async fn confirm_confirmation(
         return Ok(ConfirmationResult::NotFound);
     }
     if confirmation.expires_at <= now {
+        consume_confirmation(&mut tx, confirmation.id, now).await?;
+        tx.commit().await?;
         return Ok(ConfirmationResult::Expired);
     }
 
     let Some(current) = sqlx::query_as::<_, SnapshotRow>(
-        "SELECT started_at, ended_at, note, deleted_at
+        "SELECT started_at, ended_at, open_since, note, deleted_at
          FROM attendance_sessions
          WHERE id = ? AND guild_id = ? AND user_id = ?",
     )
@@ -200,6 +207,7 @@ pub async fn confirm_confirmation(
     let expected = SnapshotRow {
         started_at: confirmation.expected_started_at,
         ended_at: confirmation.expected_ended_at,
+        open_since: confirmation.expected_open_since,
         note: confirmation.expected_note.clone(),
         deleted_at: confirmation.expected_deleted_at,
     };
@@ -220,16 +228,40 @@ pub async fn confirm_confirmation(
             let after = SnapshotRow {
                 started_at: target_started_at,
                 ended_at: confirmation.target_ended_at,
+                open_since: if confirmation.target_ended_at.is_none() {
+                    if current.ended_at.is_none() {
+                        Some(current.open_since.unwrap_or(now).max(target_started_at))
+                    } else {
+                        Some(now)
+                    }
+                } else {
+                    None
+                },
                 note: confirmation.target_note.clone(),
                 deleted_at: current.deleted_at,
             };
+            if has_session_overlap(
+                &mut tx,
+                guild_id,
+                user_id,
+                confirmation.session_id,
+                after.started_at,
+                after.ended_at,
+            )
+            .await?
+            {
+                consume_confirmation(&mut tx, confirmation.id, now).await?;
+                tx.commit().await?;
+                return Ok(ConfirmationResult::Conflict);
+            }
             let result = sqlx::query(
                 "UPDATE attendance_sessions
-                 SET started_at = ?, ended_at = ?, note = ?, updated_at = ?
+                 SET started_at = ?, ended_at = ?, open_since = ?, note = ?, updated_at = ?
                  WHERE id = ? AND guild_id = ? AND user_id = ? AND deleted_at IS NULL",
             )
             .bind(after.started_at)
             .bind(after.ended_at)
+            .bind(after.open_since)
             .bind(&after.note)
             .bind(now)
             .bind(confirmation.session_id)
@@ -242,6 +274,7 @@ pub async fn confirm_confirmation(
                 tx.commit().await?;
                 return Ok(ConfirmationResult::Conflict);
             }
+            mark_active_auto_end_corrected(&mut tx, confirmation.session_id, now).await?;
             insert_change(
                 &mut tx,
                 ChangeInput {
@@ -260,6 +293,7 @@ pub async fn confirm_confirmation(
             let after = SnapshotRow {
                 started_at: current.started_at,
                 ended_at: current.ended_at,
+                open_since: current.open_since,
                 note: current.note.clone(),
                 deleted_at: Some(now),
             };
@@ -279,6 +313,7 @@ pub async fn confirm_confirmation(
                 tx.commit().await?;
                 return Ok(ConfirmationResult::Conflict);
             }
+            mark_active_auto_end_corrected(&mut tx, confirmation.session_id, now).await?;
             insert_change(
                 &mut tx,
                 ChangeInput {
@@ -301,12 +336,19 @@ pub async fn confirm_confirmation(
             };
             let Some(change) = sqlx::query_as::<_, ChangeRow>(
                 "SELECT id, kind AS operation, session_id,
-                        before_started_at, before_ended_at, before_note, before_deleted_at,
-                        after_started_at, after_ended_at, after_note, after_deleted_at
-                 FROM attendance_changes
-                 WHERE id = ? AND guild_id = ? AND user_id = ? AND reverted_at IS NULL",
+                        before_started_at, before_ended_at, before_open_since, before_note, before_deleted_at,
+                        after_started_at, after_ended_at, after_open_since, after_note, after_deleted_at
+                  FROM attendance_changes
+                  WHERE id = ? AND guild_id = ? AND user_id = ? AND reverted_at IS NULL
+                    AND id = (
+                        SELECT id FROM attendance_changes
+                        WHERE guild_id = ? AND user_id = ? AND reverted_at IS NULL
+                        ORDER BY id DESC LIMIT 1
+                    )",
             )
             .bind(change_id)
+            .bind(guild_id)
+            .bind(user_id)
             .bind(guild_id)
             .bind(user_id)
             .fetch_optional(&mut *tx)
@@ -317,6 +359,43 @@ pub async fn confirm_confirmation(
                 return Ok(ConfirmationResult::Conflict);
             };
             if change.session_id != confirmation.session_id || !matches_after(&current, &change) {
+                consume_confirmation(&mut tx, confirmation.id, now).await?;
+                tx.commit().await?;
+                return Ok(ConfirmationResult::Conflict);
+            }
+            let restored = if change.operation == "start" {
+                SnapshotRow {
+                    started_at: current.started_at,
+                    ended_at: current.ended_at,
+                    open_since: current.open_since,
+                    note: current.note.clone(),
+                    deleted_at: Some(now),
+                }
+            } else {
+                let Some(started_at) = change.before_started_at else {
+                    consume_confirmation(&mut tx, confirmation.id, now).await?;
+                    tx.commit().await?;
+                    return Ok(ConfirmationResult::Conflict);
+                };
+                SnapshotRow {
+                    started_at,
+                    ended_at: change.before_ended_at,
+                    open_since: change.before_open_since,
+                    note: change.before_note.clone(),
+                    deleted_at: change.before_deleted_at,
+                }
+            };
+            if restored.deleted_at.is_none()
+                && has_session_overlap(
+                    &mut tx,
+                    guild_id,
+                    user_id,
+                    change.session_id,
+                    restored.started_at,
+                    restored.ended_at,
+                )
+                .await?
+            {
                 consume_confirmation(&mut tx, confirmation.id, now).await?;
                 tx.commit().await?;
                 return Ok(ConfirmationResult::Conflict);
@@ -337,13 +416,14 @@ pub async fn confirm_confirmation(
             } else {
                 sqlx::query(
                     "UPDATE attendance_sessions
-                     SET started_at = ?, ended_at = ?, note = ?, deleted_at = ?, updated_at = ?
+                     SET started_at = ?, ended_at = ?, open_since = ?, note = ?, deleted_at = ?, updated_at = ?
                      WHERE id = ? AND guild_id = ? AND user_id = ?",
                 )
-                .bind(change.before_started_at)
-                .bind(change.before_ended_at)
-                .bind(&change.before_note)
-                .bind(change.before_deleted_at)
+                .bind(restored.started_at)
+                .bind(restored.ended_at)
+                .bind(restored.open_since)
+                .bind(&restored.note)
+                .bind(restored.deleted_at)
                 .bind(now)
                 .bind(change.session_id)
                 .bind(guild_id)
@@ -357,6 +437,7 @@ pub async fn confirm_confirmation(
                 tx.commit().await?;
                 return Ok(ConfirmationResult::Conflict);
             }
+            restore_auto_end_for_snapshot(&mut tx, change.session_id, &restored, now).await?;
             sqlx::query("UPDATE attendance_changes SET reverted_at = ? WHERE id = ?")
                 .bind(now)
                 .bind(change.id)

@@ -34,6 +34,7 @@ pub struct RevertPreview {
     pub current: SessionSnapshot,
     pub before_started_at: Option<i64>,
     pub before_ended_at: Option<i64>,
+    pub before_open_since: Option<i64>,
     pub before_note: Option<String>,
     pub before_deleted_at: Option<i64>,
 }
@@ -52,7 +53,7 @@ pub enum ConfirmationResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RevertPreviewResult {
-    Available(RevertPreview),
+    Available(Box<RevertPreview>),
     NothingToRevert,
     Conflict,
 }
@@ -61,6 +62,7 @@ pub enum RevertPreviewResult {
 pub struct SnapshotRow {
     pub started_at: i64,
     pub ended_at: Option<i64>,
+    pub open_since: Option<i64>,
     pub note: Option<String>,
     pub deleted_at: Option<i64>,
 }
@@ -69,6 +71,7 @@ pub type SessionSnapshot = SnapshotRow;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutoEndNotice {
+    pub event_id: i64,
     pub session_id: i64,
     pub automatic_ended_at: i64,
     pub applied_at: i64,

@@ -11,10 +11,12 @@ pub(super) struct ChangeRow {
     pub(super) session_id: i64,
     pub(super) before_started_at: Option<i64>,
     pub(super) before_ended_at: Option<i64>,
+    pub(super) before_open_since: Option<i64>,
     pub(super) before_note: Option<String>,
     pub(super) before_deleted_at: Option<i64>,
     pub(super) after_started_at: i64,
     pub(super) after_ended_at: Option<i64>,
+    pub(super) after_open_since: Option<i64>,
     pub(super) after_note: Option<String>,
     pub(super) after_deleted_at: Option<i64>,
 }
@@ -33,6 +35,7 @@ pub(super) fn snapshot(session: &AttendanceSession) -> SnapshotRow {
     SnapshotRow {
         started_at: session.started_at,
         ended_at: session.ended_at,
+        open_since: session.open_since,
         note: session.note.clone(),
         deleted_at: session.deleted_at,
     }
@@ -45,10 +48,10 @@ pub(super) async fn insert_change(
     sqlx::query(
         "INSERT INTO attendance_changes (
             guild_id, user_id, session_id, kind,
-            before_started_at, before_ended_at, before_note, before_deleted_at,
-            after_started_at, after_ended_at, after_note, after_deleted_at,
+            before_started_at, before_ended_at, before_open_since, before_note, before_deleted_at,
+            after_started_at, after_ended_at, after_open_since, after_note, after_deleted_at,
             created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(input.guild_id)
     .bind(input.user_id)
@@ -56,10 +59,12 @@ pub(super) async fn insert_change(
     .bind(input.kind)
     .bind(input.before.map(|value| value.started_at))
     .bind(input.before.and_then(|value| value.ended_at))
+    .bind(input.before.and_then(|value| value.open_since))
     .bind(input.before.and_then(|value| value.note.as_deref()))
     .bind(input.before.and_then(|value| value.deleted_at))
     .bind(input.after.started_at)
     .bind(input.after.ended_at)
+    .bind(input.after.open_since)
     .bind(input.after.note.as_deref())
     .bind(input.after.deleted_at)
     .bind(input.created_at)
@@ -71,6 +76,7 @@ pub(super) async fn insert_change(
 pub(super) fn matches_after(current: &SnapshotRow, change: &ChangeRow) -> bool {
     current.started_at == change.after_started_at
         && current.ended_at == change.after_ended_at
+        && current.open_since == change.after_open_since
         && current.note.as_deref() == change.after_note.as_deref()
         && current.deleted_at == change.after_deleted_at
 }
@@ -82,8 +88,8 @@ pub async fn latest_revert_preview(
 ) -> Result<RevertPreviewResult, sqlx::Error> {
     let Some(change) = sqlx::query_as::<_, ChangeRow>(
         "SELECT id, kind AS operation, session_id,
-                before_started_at, before_ended_at, before_note, before_deleted_at,
-                after_started_at, after_ended_at, after_note, after_deleted_at
+                before_started_at, before_ended_at, before_open_since, before_note, before_deleted_at,
+                after_started_at, after_ended_at, after_open_since, after_note, after_deleted_at
          FROM attendance_changes
          WHERE guild_id = ? AND user_id = ? AND reverted_at IS NULL
          ORDER BY id DESC LIMIT 1",
@@ -96,7 +102,7 @@ pub async fn latest_revert_preview(
         return Ok(RevertPreviewResult::NothingToRevert);
     };
     let Some(current) = sqlx::query_as::<_, SnapshotRow>(
-        "SELECT started_at, ended_at, note, deleted_at
+        "SELECT started_at, ended_at, open_since, note, deleted_at
          FROM attendance_sessions
          WHERE id = ? AND guild_id = ? AND user_id = ?",
     )
@@ -111,14 +117,15 @@ pub async fn latest_revert_preview(
     if !matches_after(&current, &change) {
         return Ok(RevertPreviewResult::Conflict);
     }
-    Ok(RevertPreviewResult::Available(RevertPreview {
+    Ok(RevertPreviewResult::Available(Box::new(RevertPreview {
         change_id: change.id,
         operation: change.operation,
         session_id: change.session_id,
         current,
         before_started_at: change.before_started_at,
         before_ended_at: change.before_ended_at,
+        before_open_since: change.before_open_since,
         before_note: change.before_note,
         before_deleted_at: change.before_deleted_at,
-    }))
+    })))
 }

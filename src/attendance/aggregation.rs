@@ -98,6 +98,7 @@ mod tests {
             display_name: "x".into(),
             started_at,
             ended_at: Some(ended_at),
+            open_since: None,
             note: None,
             created_at: 0,
             updated_at: 0,

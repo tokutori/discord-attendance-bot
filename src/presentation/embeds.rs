@@ -2,6 +2,7 @@ use poise::serenity_prelude as serenity;
 
 use crate::{
     attendance::{AttendanceSession, MonthlyAttendance},
+    repository::{AutoEndNotice, UserProfile},
     time::{format_duration, format_history_range},
 };
 
@@ -13,6 +14,7 @@ pub fn response_embed(
     title: impl Into<String>,
     description: impl Into<String>,
 ) -> serenity::CreateEmbed {
+    let description = truncate_chars(&description.into(), MAX_DESCRIPTION_CHARS);
     serenity::CreateEmbed::new()
         .title(title)
         .description(description)
@@ -23,10 +25,86 @@ pub fn error_embed(
     title: impl Into<String>,
     description: impl Into<String>,
 ) -> serenity::CreateEmbed {
+    let description = truncate_chars(&description.into(), MAX_DESCRIPTION_CHARS);
     serenity::CreateEmbed::new()
         .title(title)
         .description(description)
         .color(ERROR_COLOR)
+}
+
+pub fn auto_end_notice_text(notice: &AutoEndNotice) -> String {
+    if notice.corrected_at.is_some() {
+        format!(
+            "前回の終了忘れによる記録 #{} の自動終了（{}）は、ユーザー入力を正として扱った。",
+            notice.session_id,
+            crate::time::format_datetime(notice.automatic_ended_at)
+        )
+    } else {
+        format!(
+            "前回の終了忘れにより、記録 #{} は {} に自動終了として扱った。実際の終了時刻が異なる場合は `/attendance edit record:{}` で修正してほしい。",
+            notice.session_id,
+            crate::time::format_datetime(notice.automatic_ended_at),
+            notice.session_id
+        )
+    }
+}
+
+pub fn export_help_embed() -> serenity::CreateEmbed {
+    serenity::CreateEmbed::new()
+        .title("活動時間エクスポート ヘルプ")
+        .description("月単位の活動時間を CSV と PDF で出力する。month は必須。通常は preview で本人だけに送信する。")
+        .field(
+            "使い方",
+            "`/attendanceexport export month:YYYY-MM [mode:preview|publish]`\n月次帳票を出力する。\n\n`/attendanceexport userconfig [generation] [real_name] [role]`\n代・本名・役割を設定する。全項目を省略すると現在値を表示する。\n\n`/attendanceexport help`\nこのヘルプを表示する。",
+            false,
+        )
+        .field(
+            "出力内容",
+            "ユーザー設定の代・本名・役割をCSVの列とPDFのユーザー情報へ反映する。未設定の本名はDiscord表示名を使用する。活動時間があるセルは `時間:分` 形式。PDFの0時間セルは空欄、CSVの0時間セルは `0:00` と表示する。",
+            false,
+        )
+        .field(
+            "preview / publish",
+            "`preview`（既定）: 実行者だけに表示する。\n`publish`: サーバー全員が見られるメッセージとして送信する。\n\n全員分の本名と活動時間を扱うため、exportの実行には「サーバー管理」権限が必要。",
+            false,
+        )
+        .field(
+            "集計上の注記",
+            "対象月が終了していない場合は暫定集計と明記する。翌月1日に出力した場合も、修正の可能性があるため確定版ではないと明記する。",
+            false,
+        )
+        .footer(serenity::CreateEmbedFooter::new(
+            "PDFは日本語フォントの設定が必要な場合がある",
+        ))
+        .color(DEFAULT_COLOR)
+}
+
+pub fn user_profile_embed(profile: Option<&UserProfile>, updated: bool) -> serenity::CreateEmbed {
+    let title = if updated {
+        "ユーザー設定を更新した"
+    } else {
+        "現在のユーザー設定"
+    };
+    let generation = profile
+        .and_then(|value| value.generation)
+        .map(|value| format!("{value}代"))
+        .unwrap_or_else(|| "未設定".into());
+    let real_name = profile
+        .and_then(|value| value.real_name.as_deref())
+        .unwrap_or("未設定");
+    let role = profile
+        .and_then(|value| value.role.as_deref())
+        .unwrap_or("未設定");
+    serenity::CreateEmbed::new()
+        .title(title)
+        .description("この設定は月次CSV・PDFのユーザー情報に使用する。")
+        .field("代", generation, true)
+        .field("本名", real_name, true)
+        .field("役割", role, true)
+        .footer(serenity::CreateEmbedFooter::new(
+            "未指定の項目は既存値を維持する",
+        ))
+        .color(DEFAULT_COLOR)
 }
 
 pub fn help_embed(display_name: &str) -> serenity::CreateEmbed {
@@ -57,7 +135,7 @@ pub fn help_embed(display_name: &str) -> serenity::CreateEmbed {
             false,
         )
         .footer(serenity::CreateEmbedFooter::new(
-            "すべてのコマンド応答は本人にだけ表示される",
+            "/attendance の応答は本人のみ。管理者向けexportのpublishだけは公開される",
         ))
         .color(DEFAULT_COLOR)
 }

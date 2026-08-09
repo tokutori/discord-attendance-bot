@@ -18,6 +18,7 @@ fn now_and_optional_time(at: Option<&str>) -> Result<(i64, i64), Error> {
     ))
 }
 
+/// 活動を開始する。
 #[poise::command(slash_command, guild_only)]
 pub async fn start(
     ctx: Context<'_>,
@@ -66,6 +67,7 @@ pub async fn start(
     send_response(ctx, content).await
 }
 
+/// 現在の活動を終了する。
 #[poise::command(slash_command, guild_only, rename = "end")]
 pub async fn end(
     ctx: Context<'_>,
@@ -76,7 +78,13 @@ pub async fn end(
 ) -> Result<(), Error> {
     defer_ephemeral(ctx).await?;
     let (guild_id, user_id) = ids(ctx)?;
-    let (now, ended_at) = now_and_optional_time(at.as_deref())?;
+    let now_utc = Utc::now();
+    let now = now_utc.timestamp();
+    let ended_at = at
+        .as_deref()
+        .map(|value| time::parse_most_recent_time(value, now_utc))
+        .transpose()?
+        .unwrap_or(now);
     let content = match attendance::end(
         &ctx.data().database,
         guild_id,
@@ -120,6 +128,7 @@ pub async fn end(
     send_response(ctx, content).await
 }
 
+/// 直近の終了済み記録を活動中へ戻す。
 #[poise::command(slash_command, guild_only, rename = "continue")]
 pub async fn continue_activity(ctx: Context<'_>) -> Result<(), Error> {
     defer_ephemeral(ctx).await?;

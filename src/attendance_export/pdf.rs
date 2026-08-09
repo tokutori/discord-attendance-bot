@@ -59,13 +59,92 @@ fn add_pdf_text(
     ops.push(Op::EndTextSection);
 }
 
-fn truncate_pdf_text(value: &str, max_chars: usize) -> String {
-    let mut chars = value.chars();
-    let mut result = chars.by_ref().take(max_chars).collect::<String>();
-    if chars.next().is_some() {
-        result.push('…');
+#[derive(Debug, PartialEq)]
+struct UserInfoLayout {
+    lines: Vec<String>,
+    font_size: f32,
+    line_height: f32,
+}
+
+fn pdf_character_width_em(character: char) -> f32 {
+    if character.is_ascii() || ('\u{ff61}'..='\u{ff9f}').contains(&character) {
+        0.55
+    } else {
+        1.0
     }
-    result
+}
+
+fn wrap_pdf_text(value: &str, max_width_pt: f32, font_size: f32) -> Vec<String> {
+    if value.is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut line_width_pt = 0.0_f32;
+    let mut previous_was_carriage_return = false;
+    for character in value.chars() {
+        if character == '\r' || character == '\n' {
+            if character == '\n' && previous_was_carriage_return {
+                previous_was_carriage_return = false;
+                continue;
+            }
+            lines.push(std::mem::take(&mut line));
+            line_width_pt = 0.0;
+            previous_was_carriage_return = character == '\r';
+            continue;
+        }
+        previous_was_carriage_return = false;
+        let character_width_pt = pdf_character_width_em(character) * font_size;
+        if !line.is_empty() && line_width_pt + character_width_pt > max_width_pt {
+            lines.push(std::mem::take(&mut line));
+            line_width_pt = 0.0;
+        }
+        line.push(character);
+        line_width_pt += character_width_pt;
+    }
+    lines.push(line);
+    lines
+}
+
+fn user_info_parts(row: &ExportRow) -> Vec<String> {
+    let mut parts = Vec::new();
+    if let Some(generation) = row.generation {
+        parts.push(format!("{generation}代"));
+    }
+    parts.push(row.export_name().to_owned());
+    if let Some(role) = row.role.as_deref() {
+        parts.push(format!("（{role}）"));
+    }
+    parts
+}
+
+fn layout_user_info(row: &ExportRow, cell_width: f32, row_height: f32) -> UserInfoLayout {
+    const MM_TO_PT: f32 = 72.0 / 25.4;
+    const MAX_FONT_SIZE: f32 = 7.5;
+    const MIN_HORIZONTAL_PADDING: f32 = 1.0;
+    const VERTICAL_PADDING: f32 = 0.6;
+
+    let max_width_pt = (cell_width - MIN_HORIZONTAL_PADDING * 2.0) * MM_TO_PT;
+    let available_height = row_height - VERTICAL_PADDING * 2.0;
+    let parts = user_info_parts(row);
+    let mut font_size = MAX_FONT_SIZE;
+
+    loop {
+        let lines = parts
+            .iter()
+            .flat_map(|part| wrap_pdf_text(part, max_width_pt, font_size))
+            .collect::<Vec<_>>();
+        let line_height = font_size * 0.3528 * 1.12;
+        if line_height * lines.len() as f32 <= available_height {
+            return UserInfoLayout {
+                lines,
+                font_size,
+                line_height,
+            };
+        }
+        font_size *= 0.9;
+    }
 }
 
 fn centered_text_y(top: f32, row_height: f32, font_size: f32) -> f32 {
@@ -182,14 +261,20 @@ fn add_pdf_table(
 
     for (row_index, row) in rows.iter().enumerate() {
         let row_top = top - row_height * (row_index + 1) as f32;
-        add_pdf_text(
-            ops,
-            font,
-            truncate_pdf_text(&row.pdf_identity(), 16),
-            margin + 1.0,
-            centered_text_y(row_top, row_height, 7.5),
-            7.5,
-        );
+        let user_info = layout_user_info(row, user_width, row_height);
+        let text_height = user_info.line_height * user_info.lines.len() as f32;
+        let font_height = user_info.font_size * 0.3528;
+        let first_baseline = row_top - (row_height - text_height) / 2.0 - font_height * 0.8;
+        for (line_index, line) in user_info.lines.into_iter().enumerate() {
+            add_pdf_text(
+                ops,
+                font,
+                line,
+                margin + 1.0,
+                first_baseline - user_info.line_height * line_index as f32,
+                user_info.font_size,
+            );
+        }
         for (day_index, seconds) in row.daily_seconds.iter().enumerate() {
             add_pdf_text(
                 ops,
@@ -276,5 +361,44 @@ pub fn to_pdf(export: &MonthlyExport) -> anyhow::Result<Vec<u8>> {
         subset_fonts: true,
         ..PdfSaveOptions::default()
     };
-    Ok(document.with_pages(pages).save(&options, &mut warnings))
+    let bytes = document.with_pages(pages).save(&options, &mut warnings);
+    for warning in warnings {
+        tracing::warn!(?warning, "PDF generation warning");
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wraps_long_userconfig_identity_without_losing_generation_name_or_role() {
+        let real_name =
+            "非常に長い本名を持つ帳票確認用ユーザー山田太郎第二確認用氏名文字列佐藤花子";
+        let role = "出席管理システム運用責任者兼会計監査担当";
+        let row = ExportRow {
+            user_id: 9_876_543_210,
+            display_name: "Discord表示名".into(),
+            generation: Some(17),
+            real_name: Some(real_name.into()),
+            role: Some(role.into()),
+            daily_seconds: Vec::new(),
+            total_seconds: 0,
+        };
+
+        let layout = layout_user_info(&row, 48.0, 8.0);
+        assert!(layout.lines.len() > 3);
+        assert!(layout.font_size >= 3.0);
+        assert!(layout.line_height * layout.lines.len() as f32 <= 8.0 - 1.2);
+        assert_eq!(layout.lines.concat(), format!("17代{real_name}（{role}）"));
+        assert!(!layout.lines.iter().any(|line| line.contains('…')));
+        assert!(!layout.lines.iter().any(|line| line.contains("9876543210")));
+
+        let max_width_pt = (48.0 - 2.0) * (72.0 / 25.4);
+        for line in layout.lines {
+            let width_pt = line.chars().map(pdf_character_width_em).sum::<f32>() * layout.font_size;
+            assert!(width_pt <= max_width_pt + f32::EPSILON);
+        }
+    }
 }

@@ -1,12 +1,56 @@
 use chrono::{DateTime, Utc};
-use sqlx::{FromRow, SqlitePool};
+use sqlx::{FromRow, Sqlite, SqlitePool, Transaction};
 
 use crate::{attendance::AttendanceSession, time};
 
 use super::{
     AutoEndCorrection, AutoEndNotice, SnapshotRow,
     change::{ChangeInput, insert_change, snapshot},
+    transaction::begin_immediate,
 };
+
+pub(super) async fn mark_active_auto_end_corrected(
+    tx: &mut Transaction<'_, Sqlite>,
+    session_id: i64,
+    now: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE attendance_auto_end_events
+         SET corrected_at = ?
+         WHERE session_id = ? AND corrected_at IS NULL",
+    )
+    .bind(now)
+    .bind(session_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+pub(super) async fn restore_auto_end_for_snapshot(
+    tx: &mut Transaction<'_, Sqlite>,
+    session_id: i64,
+    state: &SnapshotRow,
+    now: i64,
+) -> Result<(), sqlx::Error> {
+    mark_active_auto_end_corrected(tx, session_id, now).await?;
+    let Some(ended_at) = state.ended_at.filter(|_| state.deleted_at.is_none()) else {
+        return Ok(());
+    };
+    sqlx::query(
+        "UPDATE attendance_auto_end_events
+         SET corrected_at = NULL
+         WHERE id = (
+             SELECT id FROM attendance_auto_end_events
+             WHERE session_id = ? AND automatic_ended_at = ?
+             ORDER BY applied_at DESC, id DESC LIMIT 1
+         )",
+    )
+    .bind(session_id)
+    .bind(ended_at)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
 
 pub async fn apply_due_auto_ends(
     pool: &SqlitePool,
@@ -14,7 +58,7 @@ pub async fn apply_due_auto_ends(
     now: i64,
 ) -> Result<Vec<AutoEndNotice>, sqlx::Error> {
     let now_utc = DateTime::<Utc>::from_timestamp(now, 0).unwrap_or_else(Utc::now);
-    let mut tx = pool.begin().await?;
+    let mut tx = begin_immediate(pool).await?;
     let sessions = sqlx::query_as::<_, AttendanceSession>(
         "SELECT * FROM attendance_sessions
          WHERE guild_id = ? AND ended_at IS NULL AND deleted_at IS NULL
@@ -25,24 +69,29 @@ pub async fn apply_due_auto_ends(
     .await?;
     let mut notices = Vec::new();
     for session in sessions {
-        let Some(automatic_ended_at) = time::auto_end_timestamp(session.started_at, now_utc) else {
+        let Some(automatic_ended_at) = session
+            .open_since
+            .and_then(|open_since| time::auto_end_timestamp(open_since, now_utc))
+        else {
             continue;
         };
         let result = sqlx::query(
             "UPDATE attendance_sessions
-             SET ended_at = ?, updated_at = ?
-             WHERE id = ? AND guild_id = ? AND ended_at IS NULL AND deleted_at IS NULL",
+             SET ended_at = ?, open_since = NULL, updated_at = ?
+             WHERE id = ? AND guild_id = ? AND user_id = ?
+               AND ended_at IS NULL AND deleted_at IS NULL",
         )
         .bind(automatic_ended_at)
         .bind(now)
         .bind(session.id)
         .bind(guild_id)
+        .bind(session.user_id)
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() != 1 {
             continue;
         }
-        sqlx::query(
+        let event = sqlx::query(
             "INSERT INTO attendance_auto_end_events (
                 session_id, guild_id, user_id, automatic_ended_at, applied_at
              ) VALUES (?, ?, ?, ?, ?)",
@@ -55,6 +104,7 @@ pub async fn apply_due_auto_ends(
         .execute(&mut *tx)
         .await?;
         notices.push(AutoEndNotice {
+            event_id: event.last_insert_rowid(),
             session_id: session.id,
             automatic_ended_at,
             applied_at: now,
@@ -73,9 +123,9 @@ pub async fn latest_auto_ended(
     let Some(session) = sqlx::query_as::<_, AttendanceSession>(
         "SELECT s.* FROM attendance_sessions s
          INNER JOIN attendance_auto_end_events a ON a.session_id = s.id
-         WHERE s.guild_id = ? AND s.user_id = ? AND s.ended_at IS NOT NULL
+         WHERE s.guild_id = ? AND s.user_id = ? AND s.ended_at = a.automatic_ended_at
            AND s.deleted_at IS NULL AND a.corrected_at IS NULL
-         ORDER BY a.applied_at DESC LIMIT 1",
+         ORDER BY a.applied_at DESC, a.id DESC LIMIT 1",
     )
     .bind(guild_id)
     .bind(user_id)
@@ -86,9 +136,11 @@ pub async fn latest_auto_ended(
     };
     let automatic_ended_at = sqlx::query_scalar::<_, i64>(
         "SELECT automatic_ended_at FROM attendance_auto_end_events
-         WHERE session_id = ? AND corrected_at IS NULL",
+         WHERE session_id = ? AND automatic_ended_at = ? AND corrected_at IS NULL
+         ORDER BY applied_at DESC, id DESC LIMIT 1",
     )
     .bind(session.id)
+    .bind(session.ended_at)
     .fetch_one(pool)
     .await?;
     Ok(Some(AutoEndCorrection {
@@ -106,14 +158,11 @@ pub async fn correct_auto_ended_session(
     note: Option<&str>,
     now: i64,
 ) -> Result<Option<AutoEndCorrection>, sqlx::Error> {
-    let mut tx = pool.begin().await?;
-    let Some(existing) = sqlx::query_as::<_, AttendanceSession>(
-        "SELECT s.* FROM attendance_sessions s
-         INNER JOIN attendance_auto_end_events a ON a.session_id = s.id
-         WHERE s.id = ? AND s.guild_id = ? AND s.user_id = ?
-           AND s.ended_at IS NOT NULL AND s.deleted_at IS NULL
-           AND a.corrected_at IS NULL
-         LIMIT 1",
+    let mut tx = begin_immediate(pool).await?;
+    let Some(event) = sqlx::query_as::<_, AutoEndEventIdentity>(
+        "SELECT id, automatic_ended_at FROM attendance_auto_end_events
+         WHERE session_id = ? AND guild_id = ? AND user_id = ? AND corrected_at IS NULL
+         ORDER BY applied_at DESC, id DESC LIMIT 1",
     )
     .bind(id)
     .bind(guild_id)
@@ -123,23 +172,32 @@ pub async fn correct_auto_ended_session(
     else {
         return Ok(None);
     };
-    let automatic_ended_at = sqlx::query_scalar::<_, i64>(
-        "SELECT automatic_ended_at FROM attendance_auto_end_events
-         WHERE session_id = ? AND corrected_at IS NULL",
+    let Some(existing) = sqlx::query_as::<_, AttendanceSession>(
+        "SELECT * FROM attendance_sessions
+         WHERE id = ? AND guild_id = ? AND user_id = ?
+           AND ended_at = ? AND deleted_at IS NULL",
     )
     .bind(id)
-    .fetch_one(&mut *tx)
-    .await?;
+    .bind(guild_id)
+    .bind(user_id)
+    .bind(event.automatic_ended_at)
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        return Ok(None);
+    };
     let after = SnapshotRow {
         started_at: existing.started_at,
         ended_at: Some(ended_at),
+        open_since: None,
         note: note.map(str::to_owned).or(existing.note.clone()),
         deleted_at: existing.deleted_at,
     };
     let result = sqlx::query(
         "UPDATE attendance_sessions
-         SET ended_at = ?, note = ?, updated_at = ?
-         WHERE id = ? AND guild_id = ? AND user_id = ? AND deleted_at IS NULL",
+         SET ended_at = ?, open_since = NULL, note = ?, updated_at = ?
+         WHERE id = ? AND guild_id = ? AND user_id = ?
+           AND ended_at = ? AND deleted_at IS NULL",
     )
     .bind(ended_at)
     .bind(&after.note)
@@ -147,9 +205,21 @@ pub async fn correct_auto_ended_session(
     .bind(id)
     .bind(guild_id)
     .bind(user_id)
+    .bind(event.automatic_ended_at)
     .execute(&mut *tx)
     .await?;
     if result.rows_affected() != 1 {
+        return Ok(None);
+    }
+    let corrected = sqlx::query(
+        "UPDATE attendance_auto_end_events SET corrected_at = ?
+         WHERE id = ? AND corrected_at IS NULL",
+    )
+    .bind(now)
+    .bind(event.id)
+    .execute(&mut *tx)
+    .await?;
+    if corrected.rows_affected() != 1 {
         return Ok(None);
     }
     insert_change(
@@ -165,11 +235,6 @@ pub async fn correct_auto_ended_session(
         },
     )
     .await?;
-    sqlx::query("UPDATE attendance_auto_end_events SET corrected_at = ? WHERE session_id = ?")
-        .bind(now)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
     tx.commit().await?;
     Ok(Some(AutoEndCorrection {
         session: AttendanceSession {
@@ -178,48 +243,72 @@ pub async fn correct_auto_ended_session(
             updated_at: now,
             ..existing
         },
-        automatic_ended_at,
+        automatic_ended_at: event.automatic_ended_at,
     }))
 }
 
-pub async fn take_auto_end_notice(
+pub async fn peek_auto_end_notice(
     pool: &SqlitePool,
     guild_id: i64,
     user_id: i64,
-    now: i64,
 ) -> Result<Option<AutoEndNotice>, sqlx::Error> {
-    let mut tx = pool.begin().await?;
-    let notice = sqlx::query_as::<_, AutoEndNoticeRow>(
-        "SELECT session_id, automatic_ended_at, applied_at, corrected_at
+    sqlx::query_as::<_, AutoEndNoticeRow>(
+        "SELECT id, session_id, automatic_ended_at, applied_at, corrected_at
          FROM attendance_auto_end_events
          WHERE guild_id = ? AND user_id = ? AND notified_at IS NULL
-         ORDER BY applied_at DESC LIMIT 1",
+         ORDER BY applied_at ASC, id ASC LIMIT 1",
     )
     .bind(guild_id)
     .bind(user_id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let Some(notice) = notice else {
-        return Ok(None);
-    };
-    sqlx::query("UPDATE attendance_auto_end_events SET notified_at = ? WHERE session_id = ?")
-        .bind(now)
-        .bind(notice.session_id)
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
-    Ok(Some(AutoEndNotice {
-        session_id: notice.session_id,
-        automatic_ended_at: notice.automatic_ended_at,
-        applied_at: notice.applied_at,
-        corrected_at: notice.corrected_at,
-    }))
+    .fetch_optional(pool)
+    .await
+    .map(|notice| notice.map(Into::into))
+}
+
+pub async fn acknowledge_auto_end_notice(
+    pool: &SqlitePool,
+    event_id: i64,
+    guild_id: i64,
+    user_id: i64,
+    now: i64,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "UPDATE attendance_auto_end_events SET notified_at = ?
+         WHERE id = ? AND guild_id = ? AND user_id = ? AND notified_at IS NULL",
+    )
+    .bind(now)
+    .bind(event_id)
+    .bind(guild_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?
+    .rows_affected()
+        == 1)
+}
+
+#[derive(Debug, FromRow)]
+struct AutoEndEventIdentity {
+    id: i64,
+    automatic_ended_at: i64,
 }
 
 #[derive(Debug, FromRow)]
 struct AutoEndNoticeRow {
+    id: i64,
     session_id: i64,
     automatic_ended_at: i64,
     applied_at: i64,
     corrected_at: Option<i64>,
+}
+
+impl From<AutoEndNoticeRow> for AutoEndNotice {
+    fn from(value: AutoEndNoticeRow) -> Self {
+        Self {
+            event_id: value.id,
+            session_id: value.session_id,
+            automatic_ended_at: value.automatic_ended_at,
+            applied_at: value.applied_at,
+            corrected_at: value.corrected_at,
+        }
+    }
 }

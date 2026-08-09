@@ -15,7 +15,18 @@ const TOPIC_REFRESH_INTERVAL: Duration = Duration::from_secs(600);
 
 pub async fn apply_due_auto_ends(pool: &SqlitePool, guild_id: i64) -> anyhow::Result<usize> {
     let now = Utc::now().timestamp();
-    let notices = repository::apply_due_auto_ends(pool, guild_id, now).await?;
+    let mut attempt = 0_u32;
+    let notices = loop {
+        match repository::apply_due_auto_ends(pool, guild_id, now).await {
+            Ok(notices) => break notices,
+            Err(error) if attempt < 3 && is_sqlite_busy(&error) => {
+                attempt += 1;
+                tracing::warn!(attempt, guild_id, "retrying busy automatic end transaction");
+                tokio::time::sleep(Duration::from_millis(250 * u64::from(attempt))).await;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
     for notice in &notices {
         tracing::info!(
             guild_id,
@@ -25,6 +36,21 @@ pub async fn apply_due_auto_ends(pool: &SqlitePool, guild_id: i64) -> anyhow::Re
         );
     }
     Ok(notices.len())
+}
+
+fn is_sqlite_busy(error: &sqlx::Error) -> bool {
+    let sqlx::Error::Database(database_error) = error else {
+        return false;
+    };
+    matches!(database_error.code().as_deref(), Some("5" | "6" | "517"))
+        || database_error
+            .message()
+            .to_ascii_lowercase()
+            .contains("busy")
+        || database_error
+            .message()
+            .to_ascii_lowercase()
+            .contains("locked")
 }
 
 async fn load_active_sessions(

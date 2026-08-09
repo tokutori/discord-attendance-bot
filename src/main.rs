@@ -1,4 +1,4 @@
-use std::{env, str::FromStr};
+use std::{env, str::FromStr, time::Duration};
 
 use anyhow::Context as _;
 use discord_attendance_bot::{Data, channel_status, commands, config, framework_error};
@@ -26,6 +26,7 @@ async fn main() -> anyhow::Result<()> {
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal)
+        .busy_timeout(Duration::from_secs(5))
         .foreign_keys(true);
     let database = SqlitePoolOptions::new()
         .max_connections(5)

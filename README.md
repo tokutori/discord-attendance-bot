@@ -19,7 +19,7 @@
 - `/attendanceexport userconfig [generation] [real_name] [role]`
 - `/attendanceexport help`
 
-`at` は `HH:MM`、`target` は `YYYY-MM`、編集日時は `YYYY-MM-DD HH:MM` 形式で入力する。時刻入力と表示は日本時間、SQLite 内部では UTC Unix timestamp を使用する。
+`at` は `HH:MM`、`target` は `YYYY-MM`、編集日時は `YYYY-MM-DD HH:MM` 形式で入力する。時刻入力と表示は日本時間、SQLite 内部では UTC Unix timestamp を使用する。`end at:` は現在から見て最も近い過去の同時刻として解釈するため、日付が変わった直後に前夜の終了時刻を入力できる。未来時刻になる `start`・`edit` は拒否する。
 
 ## 必要環境
 
@@ -83,7 +83,9 @@ v1.0では本番運用前の設計見直しに伴いmigration履歴とDB schema�
 
 BotのActivityは活動記録の変更時に即時更新する。専用チャンネルのTopicはBot起動時および10分ごとに更新し、その周期更新時にはActivityも同時に更新する。
 
-Botは日本時間の毎日0時に、前日21時まで活動中だった記録を21時終了として自動終了する。Botが0時に停止していた場合は、次回起動時に未処理分を補完する。自動終了後にユーザーが `end` を実行した場合は、自動終了を取り消してユーザー入力の終了時刻を正とする。次のユーザー操作時には自動終了の内容と、必要なら `edit` で修正できることを通知する。
+Botは日本時間の毎日0時に、前日21時まで活動中だった記録を21時終了として自動終了する。21時以降に開始または `continue` した記録は、直後に過去時刻へ終了させず、次の日の21時を自動終了候補とする。Botが0時に停止していた場合は、次回起動時に未処理分を補完する。同じ記録を `continue` した後に再び終了を忘れた場合も、自動終了イベントを別に記録して安全に処理する。
+
+自動終了後にユーザーが `end`・`edit`・`delete` を確定した場合は、該当する自動終了を訂正済みにしてユーザー入力を正とする。通知は次のユーザー操作の応答へ付加し、その応答の送信に成功した後でのみ通知済みにするため、Discord送信失敗で通知が失われない。
 
 Activityの種別は、Botが活動状況を監視している意味に合わせて `Watching` を使用する。
 
@@ -110,7 +112,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 テスト環境では `attendance-test.db`、本番環境では `attendance-release.db` が作成される。WAL modeを使用するため、実行中はそれぞれのDBに対応する `-wal` と `-shm` ファイルが存在する場合がある。
 
-v1.0の初期schemaは `migrations/0001_initial_schema.sql` に集約し、次の責務ごとにテーブルを分ける。
+v1.0の初期schemaは `migrations/0001_initial_schema.sql` に集約し、次の責務ごとにテーブルを分ける。セッションには現在の連続活動開始点 `open_since` を保持し、自動終了後の `continue` も次の自動終了期限を正しく計算する。所有者を含む複合外部キーとtriggerにより、他ユーザーの記録参照および同一ユーザーの活動区間重複をDB層でも拒否する。
 
 - `attendance_sessions`: 活動記録
 - `attendance_changes`: 取り消し可能な変更履歴
@@ -118,7 +120,7 @@ v1.0の初期schemaは `migrations/0001_initial_schema.sql` に集約し、次�
 - `attendance_auto_end_events`: 21時自動終了と通知・訂正状態
 - `attendance_user_profiles`: 代、本名、役割の出力設定
 
-バックアップは Bot 停止中に `attendance.db` をコピーするのが簡単である。稼働中に取得する場合は SQLite CLI の `.backup` または `VACUUM INTO` を使用する。
+バックアップは Bot 停止中に、起動モードが選択した `DATABASE_URL_TEST` または `DATABASE_URL_RELEASE` のDBファイルをコピーするのが簡単である。稼働中に取得する場合は SQLite CLI の `.backup` または `VACUUM INTO` を使用する。
 
 ```sql
 VACUUM INTO 'attendance-backup.db';
@@ -131,19 +133,23 @@ VACUUM INTO 'attendance-backup.db';
 - `continue` は直近の終了済み記録の終了時刻を取り消す。
 - `edit`、`delete`、`revert` は最初に変更内容をプレビューし、5分間有効な5文字の確認IDを発行する。`/attendance confirm id:<ID>` で確定するまで DB は変更しない。
 - `revert` は直前の成功した変更操作を1件だけ取り消す。`start` は作成記録を soft delete、`end` は終了前、`continue` は continue 前、`edit` は編集前、`delete` は削除前へ復元する。`revert` 自体は操作履歴に積まれないため、1回確定した後に再度 `revert` → `confirm` を行えば、過去の変更を順に取り消せる。対象がなければ安全な no-op とする。
-- 確認前に別の変更が入った場合、プレビュー時の状態と一致しないため安全のため確定しない。確認IDは使用済みになる。
+- 確認前に別の変更が入った場合、プレビュー時の状態と一致しない、または `revert` 対象が最新操作ではなくなるため、安全のため確定しない。確認IDは使用済みになる。
 - `edit` で `end` を空文字として入力すると活動中へ戻せる。ただし、別の活動中記録がある場合は拒否する。
 - `delete` は confirm で確定し、DB上では soft delete する。
+- 同一ユーザーの削除されていない活動記録どうしは、終了済み記録を含めて時間区間を重複させられない。`start`、`continue`、`edit`、`revert`、確認中の競合で重複が生じる場合は安全に拒否する。
+- 状態の読み取りから更新までを伴う操作は SQLite の即時write transactionで直列化し、WALの競合にはbusy timeoutと限定的な再試行を使用する。
 - `/attendance help` で利用可能なコマンドと引数を確認できる。
 - 月次集計は月境界および日境界で分割し、日本時間基準で算出する。
 - `/attendance month` は合計・活動回数・1回あたり平均に加え、1日あたり平均と1週間あたり平均を表示する。当月は今日を含む経過暦日数、過去月はその月の全日数を分母とし、未来月は分母0として平均0を表示する。活動日のみの日数ではない。
-- `/attendanceexport export month:YYYY-MM` で指定月の CSV と PDF を出力できる。`month` は必須で、`mode` は `preview`（既定、本人のみ）または `publish`（全員に公開）を指定する。
+- `/attendanceexport export month:YYYY-MM` で指定月の CSV と PDF を出力できる。`month` は必須で、`mode` は `preview`（既定、本人のみ）または `publish`（全員に公開）を指定する。全メンバーの本名を含み得るため実行者にはDiscordの「サーバー管理」権限が必要で、Botにはメッセージ送信・Embed・ファイル添付権限が必要である。
 - `/attendanceexport userconfig` は実行者の代（整数）、本名、役割を設定する。引数なしでは現在値をEmbed表示し、一部の引数だけを指定した場合はほかの設定を保持する。
 - エクスポート表は、縦方向がユーザー、横方向が対象月の日付と合計列である。CSVには代・本名・役割・Discord表示名を独立した列として含め、PDFには設定内容をユーザー情報欄へまとめて表示する。本名未設定時はDiscord表示名を使用する。対象月が未終了の場合と翌月1日の出力には、暫定集計・修正可能性の注記を付ける。
 
 ## 月次ファイル出力
 
-`/attendanceexport help` で操作方法を確認できる。CSV と PDF は同じ月次データから生成し、活動時間があるセルは `時間:分` 形式で表示する。PDFの0時間セルは空欄、CSVの0時間セルは `0:00` と表示する。現在活動中の記録は出力時点までを暫定値として含める。PDFのセル文字は上下中央揃えとし、月の日数と利用者数に応じて改ページする。
+`/attendanceexport help` で操作方法を確認できる。CSV と PDF は同じ月次データから生成し、活動時間があるセルは `時間:分` 形式で表示する。PDFの0時間セルは空欄、CSVの0時間セルは `0:00` と表示する。CSVのユーザー入力列は、表計算ソフトで数式として解釈される危険な先頭文字を無害化してからCSV構文としてescapeする。現在活動中の記録は出力時点までを暫定値として含める。PDFのセル文字は上下中央揃えとし、長い代・本名・役割は省略せず折り返しと文字サイズ調整を行い、月の日数と利用者数に応じて改ページする。
+
+Discord interactionから得た添付上限を生成後・送信前に検査する。`publish` でも処理開始・成功確認・エラーは本人だけに表示し、CSV・PDFの生成に成功した場合だけ別の公開メッセージを送る。一度公開したDiscordメッセージをBotが自動的に取り消す機能ではない。
 
 PDF は `printpdf` を使用する。表の配置と改ページは Bot 側で明示的に制御し、`PdfSaveOptions.subset_fonts = true` を必ず指定して、実際に使用した文字のグリフだけを TTF から埋め込む。CJK フォント全体を埋め込むと添付サイズが大きくなりやすいため、この方針を採用した。日本語フォントは環境依存のため、`ATTENDANCE_PDF_FONT_PATH` で TTF を指定できる。未指定時は Noto Sans JP、Windows の日本語フォントなど既定候補を検索する。
 
@@ -155,6 +161,8 @@ PDF は `printpdf` を使用する。表の配置と改ページは Bot 側で�
 src/
 ├── main.rs
 ├── lib.rs
+├── config.rs
+├── channel_status.rs
 ├── framework_error.rs
 ├── commands/
 │   ├── attendance.rs
@@ -178,8 +186,12 @@ src/
 │   ├── confirmation.rs
 │   ├── auto_end.rs
 │   ├── profile.rs
+│   ├── transaction.rs
 │   └── tests.rs
 ├── presentation/
+│   ├── mod.rs
+│   ├── embeds.rs
+│   └── status_topic.rs
 └── time.rs
 migrations/
 └── 0001_initial_schema.sql

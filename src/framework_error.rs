@@ -17,6 +17,15 @@ fn explain_command_error(error: &anyhow::Error) -> (&'static str, String) {
             format!("原因: {message}\nコマンドのヘルプに記載された形式で入力してほしい。"),
         );
     }
+    if message.contains("重複している") || message.contains("複数作ることはできない")
+    {
+        return (
+            "活動記録の競合",
+            format!(
+                "原因: {message}\n既存の活動記録を確認し、必要なら `edit` または `revert` で時刻を修正してほしい。"
+            ),
+        );
+    }
     if lowercase.contains("request entity too large") || lowercase.contains("payload too large") {
         return (
             "添付ファイルが大きすぎる",
@@ -26,9 +35,7 @@ fn explain_command_error(error: &anyhow::Error) -> (&'static str, String) {
     if message.contains("PDF") || message.contains("フォント") {
         return (
             "PDF生成設定エラー",
-            format!(
-                "原因: {message}\n日本語 TTF フォントを `ATTENDANCE_PDF_FONT_PATH` に指定して再試行してほしい。"
-            ),
+            "原因: PDF生成に必要な日本語フォントを読み込めなかった。\n日本語 TTF フォントを `ATTENDANCE_PDF_FONT_PATH` に指定して再試行してほしい。".into(),
         );
     }
     if lowercase.contains("database") || lowercase.contains("sqlite") || lowercase.contains("sqlx")
@@ -198,7 +205,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classifies_month_and_attachment_errors() {
+    fn classifies_expected_command_errors() {
         assert_eq!(
             explain_command_error(&anyhow::anyhow!("年月は YYYY-MM 形式で指定する必要がある")).0,
             "入力形式エラー"
@@ -206,6 +213,10 @@ mod tests {
         assert_eq!(
             explain_command_error(&anyhow::anyhow!("Request entity too large")).0,
             "添付ファイルが大きすぎる"
+        );
+        assert_eq!(
+            explain_command_error(&anyhow::anyhow!("活動記録の時間帯が別の記録と重複している")).0,
+            "活動記録の競合"
         );
     }
 }

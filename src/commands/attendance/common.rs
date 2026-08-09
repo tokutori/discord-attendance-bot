@@ -13,15 +13,17 @@ pub(super) fn ids(ctx: Context<'_>) -> Result<(i64, i64), Error> {
     ))
 }
 
-pub(super) async fn take_auto_end_notice(ctx: Context<'_>) -> Result<Option<String>, Error> {
+pub(super) struct PendingAutoEndNotice {
+    pub event_id: i64,
+    pub message: String,
+}
+
+pub(super) async fn peek_auto_end_notice(
+    ctx: Context<'_>,
+) -> Result<Option<PendingAutoEndNotice>, Error> {
     let (guild_id, user_id) = ids(ctx)?;
-    let Some(notice) = repository::take_auto_end_notice(
-        &ctx.data().database,
-        guild_id,
-        user_id,
-        Utc::now().timestamp(),
-    )
-    .await?
+    let Some(notice) =
+        repository::peek_auto_end_notice(&ctx.data().database, guild_id, user_id).await?
     else {
         return Ok(None);
     };
@@ -39,7 +41,26 @@ pub(super) async fn take_auto_end_notice(ctx: Context<'_>) -> Result<Option<Stri
             notice.session_id
         )
     };
-    Ok(Some(message))
+    Ok(Some(PendingAutoEndNotice {
+        event_id: notice.event_id,
+        message,
+    }))
+}
+
+pub(super) async fn acknowledge_auto_end_notice(
+    ctx: Context<'_>,
+    event_id: i64,
+) -> Result<(), Error> {
+    let (guild_id, user_id) = ids(ctx)?;
+    repository::acknowledge_auto_end_notice(
+        &ctx.data().database,
+        event_id,
+        guild_id,
+        user_id,
+        Utc::now().timestamp(),
+    )
+    .await?;
+    Ok(())
 }
 
 pub(super) async fn send_response(
@@ -47,8 +68,9 @@ pub(super) async fn send_response(
     content: impl Into<String>,
 ) -> Result<(), Error> {
     let mut content = content.into();
-    if let Some(notice) = take_auto_end_notice(ctx).await? {
-        content.push_str(&format!("\n\n【自動終了のお知らせ】\n{notice}"));
+    let notice = peek_auto_end_notice(ctx).await?;
+    if let Some(notice) = &notice {
+        content.push_str(&format!("\n\n【自動終了のお知らせ】\n{}", notice.message));
     }
     ctx.send(
         CreateReply::default()
@@ -56,6 +78,9 @@ pub(super) async fn send_response(
             .ephemeral(true),
     )
     .await?;
+    if let Some(notice) = notice {
+        acknowledge_auto_end_notice(ctx, notice.event_id).await?;
+    }
     Ok(())
 }
 

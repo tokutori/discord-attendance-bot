@@ -6,8 +6,11 @@ use crate::{
     time::{self, DISPLAY_TIMEZONE, format_datetime, format_duration},
 };
 
-use super::common::{defer_ephemeral, ids, send_response, take_auto_end_notice};
+use super::common::{
+    acknowledge_auto_end_notice, defer_ephemeral, ids, peek_auto_end_notice, send_response,
+};
 
+/// 活動時間記録コマンドの使い方を表示する。
 #[poise::command(slash_command, guild_only)]
 pub async fn help(ctx: Context<'_>) -> Result<(), Error> {
     defer_ephemeral(ctx).await?;
@@ -20,6 +23,7 @@ pub async fn help(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
+/// 現在活動中か確認する。
 #[poise::command(slash_command, guild_only)]
 pub async fn status(ctx: Context<'_>) -> Result<(), Error> {
     defer_ephemeral(ctx).await?;
@@ -47,6 +51,7 @@ pub async fn status(ctx: Context<'_>) -> Result<(), Error> {
     send_response(ctx, content).await
 }
 
+/// 最近の活動記録を表示する。
 #[poise::command(slash_command, guild_only)]
 pub async fn history(
     ctx: Context<'_>,
@@ -64,14 +69,19 @@ pub async fn history(
         &sessions,
         Utc::now().timestamp(),
     );
-    if let Some(notice) = take_auto_end_notice(ctx).await? {
-        embed = embed.field("自動終了のお知らせ", notice, false);
+    let notice = peek_auto_end_notice(ctx).await?;
+    if let Some(notice) = &notice {
+        embed = embed.field("自動終了のお知らせ", &notice.message, false);
     }
     ctx.send(CreateReply::default().embed(embed).ephemeral(true))
         .await?;
+    if let Some(notice) = notice {
+        acknowledge_auto_end_notice(ctx, notice.event_id).await?;
+    }
     Ok(())
 }
 
+/// 指定月の活動時間と平均を表示する。
 #[poise::command(slash_command, guild_only)]
 pub async fn month(
     ctx: Context<'_>,
@@ -96,10 +106,14 @@ pub async fn month(
             .await?;
     let monthly = attendance::aggregate_monthly(&sessions, year_month, now)?;
     let mut embed = presentation::month_embed(ctx.author().display_name(), &monthly);
-    if let Some(notice) = take_auto_end_notice(ctx).await? {
-        embed = embed.field("自動終了のお知らせ", notice, false);
+    let notice = peek_auto_end_notice(ctx).await?;
+    if let Some(notice) = &notice {
+        embed = embed.field("自動終了のお知らせ", &notice.message, false);
     }
     ctx.send(CreateReply::default().embed(embed).ephemeral(true))
         .await?;
+    if let Some(notice) = notice {
+        acknowledge_auto_end_notice(ctx, notice.event_id).await?;
+    }
     Ok(())
 }

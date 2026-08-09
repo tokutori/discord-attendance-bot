@@ -1,5 +1,6 @@
 mod pdf;
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Utc};
@@ -197,6 +198,30 @@ fn csv_escape(value: &str) -> String {
     }
 }
 
+fn is_csv_formula_prefix_padding(character: char) -> bool {
+    character.is_whitespace()
+        || character.is_control()
+        || matches!(
+            character,
+            '\u{feff}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}'
+        )
+}
+
+fn sanitize_csv_cell_content(value: &str) -> Cow<'_, str> {
+    let first_significant = value
+        .chars()
+        .find(|character| !is_csv_formula_prefix_padding(*character));
+    if matches!(first_significant, Some('=' | '+' | '-' | '@')) {
+        Cow::Owned(format!("'{value}"))
+    } else {
+        Cow::Borrowed(value)
+    }
+}
+
+fn encode_csv_cell(value: &str) -> String {
+    csv_escape(&sanitize_csv_cell_content(value))
+}
+
 pub fn to_csv(export: &MonthlyExport) -> Vec<u8> {
     let mut output = String::from("\u{feff}");
     output.push_str("代,本名,役割,Discord表示名");
@@ -212,11 +237,11 @@ pub fn to_csv(export: &MonthlyExport) -> Vec<u8> {
                 .unwrap_or_default(),
         );
         output.push(',');
-        output.push_str(&csv_escape(row.export_name()));
+        output.push_str(&encode_csv_cell(row.export_name()));
         output.push(',');
-        output.push_str(&csv_escape(row.role.as_deref().unwrap_or_default()));
+        output.push_str(&encode_csv_cell(row.role.as_deref().unwrap_or_default()));
         output.push(',');
-        output.push_str(&csv_escape(&row.display_name));
+        output.push_str(&encode_csv_cell(&row.display_name));
         for seconds in &row.daily_seconds {
             output.push(',');
             output.push_str(&format_csv_cell_duration(*seconds));
@@ -248,6 +273,7 @@ mod tests {
             display_name: display_name.into(),
             started_at,
             ended_at: Some(ended_at),
+            open_since: None,
             note: None,
             created_at: started_at,
             updated_at: ended_at,
@@ -256,14 +282,30 @@ mod tests {
     }
 
     fn profile(user_id: i64) -> UserProfile {
+        profile_with(user_id, Some(5), Some("山田太郎"), Some("代表"))
+    }
+
+    fn profile_with(
+        user_id: i64,
+        generation: Option<i64>,
+        real_name: Option<&str>,
+        role: Option<&str>,
+    ) -> UserProfile {
         UserProfile {
             guild_id: 1,
             user_id,
-            generation: Some(5),
-            real_name: Some("山田太郎".into()),
-            role: Some("代表".into()),
+            generation,
+            real_name: real_name.map(str::to_owned),
+            role: role.map(str::to_owned),
             updated_at: 0,
         }
+    }
+
+    fn local_timestamp(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> i64 {
+        time::DISPLAY_TIMEZONE
+            .with_ymd_and_hms(year, month, day, hour, minute, 0)
+            .unwrap()
+            .timestamp()
     }
 
     #[test]
@@ -305,6 +347,195 @@ mod tests {
         assert_eq!(format_cell_duration(-1), "");
         assert_eq!(format_cell_duration(60), "0:01");
         assert_eq!(format_csv_cell_duration(0), "0:00");
+    }
+
+    #[test]
+    fn sanitizes_csv_formula_prefixes_after_whitespace_and_control_characters() {
+        let dangerous_values = [
+            "=1+1",
+            "+SUM(A1:A2)",
+            "-2+3",
+            "@SUM(A1:A2)",
+            "  =1+1",
+            "\t\r\n+cmd",
+            "\u{0007} -2+3",
+            "\u{3000}@SUM(A1:A2)",
+            "\u{feff}\u{200b}=1+1",
+        ];
+        for value in dangerous_values {
+            assert_eq!(
+                sanitize_csv_cell_content(value).as_ref(),
+                format!("'{value}")
+            );
+        }
+
+        for value in ["", "山田太郎", " 山田太郎", "123", "'=-1", "\t通常名"] {
+            assert_eq!(sanitize_csv_cell_content(value).as_ref(), value);
+        }
+    }
+
+    #[test]
+    fn keeps_csv_content_sanitizing_separate_from_csv_syntax_escaping() {
+        assert_eq!(csv_escape("plain"), "plain");
+        assert_eq!(csv_escape("姓,名"), "\"姓,名\"");
+        assert_eq!(csv_escape("a\"b"), "\"a\"\"b\"");
+        assert_eq!(csv_escape("a\rb\n"), "\"a\rb\n\"");
+
+        assert_eq!(sanitize_csv_cell_content("通常,氏名").as_ref(), "通常,氏名");
+        assert_eq!(encode_csv_cell("通常,氏名"), "\"通常,氏名\"");
+        assert_eq!(encode_csv_cell(" \t=SUM(1,2)"), "\"' \t=SUM(1,2)\"");
+        assert_eq!(
+            encode_csv_cell("=HYPERLINK(\"x\",\"y\")"),
+            "\"'=HYPERLINK(\"\"x\"\",\"\"y\"\")\""
+        );
+    }
+
+    #[test]
+    fn sanitizes_all_user_derived_csv_columns() {
+        let export = MonthlyExport {
+            year_month: YearMonth {
+                year: 2026,
+                month: 8,
+            },
+            dates: vec![NaiveDate::from_ymd_opt(2026, 8, 1).unwrap()],
+            rows: vec![ExportRow {
+                user_id: 1,
+                display_name: "\u{0007}@discord".into(),
+                generation: Some(5),
+                real_name: Some(" \t=SUM(1,2)".into()),
+                role: Some("\n+代表".into()),
+                daily_seconds: vec![0],
+                total_seconds: 0,
+            }],
+            notices: Vec::new(),
+        };
+
+        let csv = String::from_utf8(to_csv(&export)).unwrap();
+        assert!(csv.contains("\"' \t=SUM(1,2)\""));
+        assert!(csv.contains("\"'\n+代表\""));
+        assert!(csv.contains("'\u{0007}@discord"));
+    }
+
+    #[test]
+    fn splits_sessions_at_local_midnight() {
+        let export = build_monthly_export(
+            YearMonth {
+                year: 2026,
+                month: 8,
+            },
+            &[session(
+                1,
+                "山田",
+                local_timestamp(2026, 8, 1, 23, 30),
+                local_timestamp(2026, 8, 2, 0, 30),
+            )],
+            &[],
+            time::DISPLAY_TIMEZONE
+                .with_ymd_and_hms(2026, 9, 2, 0, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+        )
+        .unwrap();
+
+        assert_eq!(export.rows[0].daily_seconds[0], 30 * 60);
+        assert_eq!(export.rows[0].daily_seconds[1], 30 * 60);
+        assert_eq!(export.rows[0].total_seconds, 60 * 60);
+    }
+
+    #[test]
+    fn clips_december_session_at_the_year_boundary() {
+        let export = build_monthly_export(
+            YearMonth {
+                year: 2025,
+                month: 12,
+            },
+            &[session(
+                1,
+                "山田",
+                local_timestamp(2025, 12, 31, 23, 30),
+                local_timestamp(2026, 1, 1, 0, 30),
+            )],
+            &[],
+            time::DISPLAY_TIMEZONE
+                .with_ymd_and_hms(2026, 1, 2, 0, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+        )
+        .unwrap();
+
+        assert_eq!(export.dates.len(), 31);
+        assert_eq!(export.dates.last().unwrap().day(), 31);
+        assert_eq!(export.rows[0].daily_seconds[30], 30 * 60);
+        assert_eq!(export.rows[0].total_seconds, 30 * 60);
+    }
+
+    #[test]
+    fn includes_leap_day_and_clips_at_march() {
+        let export = build_monthly_export(
+            YearMonth {
+                year: 2024,
+                month: 2,
+            },
+            &[session(
+                1,
+                "山田",
+                local_timestamp(2024, 2, 29, 23, 30),
+                local_timestamp(2024, 3, 1, 0, 30),
+            )],
+            &[],
+            time::DISPLAY_TIMEZONE
+                .with_ymd_and_hms(2024, 3, 2, 0, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+        )
+        .unwrap();
+
+        assert_eq!(export.dates.len(), 29);
+        assert_eq!(export.dates.last().unwrap().day(), 29);
+        assert_eq!(export.rows[0].daily_seconds[28], 30 * 60);
+        assert_eq!(export.rows[0].total_seconds, 30 * 60);
+    }
+
+    #[test]
+    fn sorts_profiles_by_generation_and_export_name_with_display_name_fallback() {
+        let started_at = local_timestamp(2026, 8, 1, 10, 0);
+        let ended_at = local_timestamp(2026, 8, 1, 11, 0);
+        let sessions = [
+            session(1, "Zulu", started_at, ended_at),
+            session(2, "表示Beta", started_at, ended_at),
+            session(3, "Gamma", started_at, ended_at),
+            session(4, "表示Alpha", started_at, ended_at),
+        ];
+        let profiles = [
+            profile_with(2, Some(2), Some("Beta"), None),
+            profile_with(3, Some(1), None, Some("会計")),
+            profile_with(4, Some(1), Some("Alpha"), Some("代表")),
+        ];
+
+        let export = build_monthly_export(
+            YearMonth {
+                year: 2026,
+                month: 8,
+            },
+            &sessions,
+            &profiles,
+            time::DISPLAY_TIMEZONE
+                .with_ymd_and_hms(2026, 9, 2, 0, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+        )
+        .unwrap();
+
+        assert_eq!(
+            export
+                .rows
+                .iter()
+                .map(|row| row.user_id)
+                .collect::<Vec<_>>(),
+            vec![4, 3, 2, 1]
+        );
+        assert_eq!(export.rows[1].export_name(), "Gamma");
+        assert_eq!(export.rows[3].export_name(), "Zulu");
     }
 
     #[test]

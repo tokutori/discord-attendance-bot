@@ -11,6 +11,7 @@ fn session_snapshot(session: &attendance::AttendanceSession) -> repository::Sess
     repository::SessionSnapshot {
         started_at: session.started_at,
         ended_at: session.ended_at,
+        open_since: session.open_since,
         note: session.note.clone(),
         deleted_at: session.deleted_at,
     }
@@ -38,6 +39,7 @@ fn confirmation_notice(request: &repository::ConfirmationRequest, details: Strin
     )
 }
 
+/// 直前の成功した変更を確認付きで取り消す。
 #[poise::command(slash_command, guild_only)]
 pub async fn revert(ctx: Context<'_>) -> Result<(), Error> {
     defer_ephemeral(ctx).await?;
@@ -96,6 +98,7 @@ pub async fn revert(ctx: Context<'_>) -> Result<(), Error> {
     send_response(ctx, confirmation_notice(&request, details)).await
 }
 
+/// 活動記録を確認付きで修正する。
 #[poise::command(slash_command, guild_only)]
 pub async fn edit(
     ctx: Context<'_>,
@@ -130,6 +133,10 @@ pub async fn edit(
         Some(value) => Some(time::parse_full_datetime(value)?),
         None => existing.ended_at,
     };
+    let now = Utc::now().timestamp();
+    if started_at > now || ended_at.is_some_and(|value| value > now) {
+        return send_response(ctx, "未来の日時には修正できない。").await;
+    }
     if ended_at.is_some_and(|value| value < started_at) {
         return send_response(ctx, "終了時刻は開始時刻以降である必要がある。").await;
     }
@@ -165,7 +172,7 @@ pub async fn edit(
             target_started_at: Some(started_at),
             target_ended_at: ended_at,
             target_note: new_note,
-            requested_at: Utc::now().timestamp(),
+            requested_at: now,
         },
     )
     .await?;
@@ -182,6 +189,7 @@ pub async fn edit(
     send_response(ctx, confirmation_notice(&request, details)).await
 }
 
+/// 活動記録を確認付きで削除する。
 #[poise::command(slash_command, guild_only)]
 pub async fn delete(
     ctx: Context<'_>,
@@ -223,6 +231,7 @@ pub async fn delete(
     send_response(ctx, confirmation_notice(&request, details)).await
 }
 
+/// 発行された確認IDで特殊操作を確定する。
 #[poise::command(slash_command, guild_only)]
 pub async fn confirm(
     ctx: Context<'_>,

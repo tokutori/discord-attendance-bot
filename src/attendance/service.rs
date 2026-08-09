@@ -33,6 +33,10 @@ pub enum ServiceError {
     EndBeforeStart,
     #[error("活動中の記録を複数作ることはできない")]
     OpenSessionConflict,
+    #[error("活動記録の時間帯が別の記録と重複している")]
+    OverlappingSession,
+    #[error("未来の時刻は指定できない")]
+    FutureTime,
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
@@ -46,6 +50,9 @@ pub async fn start(
     note: Option<&str>,
     now: i64,
 ) -> Result<StartOutcome, ServiceError> {
+    if started_at > now {
+        return Err(ServiceError::FutureTime);
+    }
     if let Some(existing) = repository::open_session(pool, guild_id, user_id).await? {
         return Ok(StartOutcome::AlreadyActive(existing));
     }
@@ -64,6 +71,7 @@ pub async fn start(
                     .ok_or(ServiceError::OpenSessionConflict)?,
             ))
         }
+        Err(e) if is_overlap_error(&e) => Err(ServiceError::OverlappingSession),
         Err(e) => Err(e.into()),
     }
 }
@@ -76,6 +84,9 @@ pub async fn end(
     note: Option<&str>,
     now: i64,
 ) -> Result<EndOutcome, ServiceError> {
+    if ended_at > now {
+        return Err(ServiceError::FutureTime);
+    }
     let Some(open) = repository::open_session(pool, guild_id, user_id).await? else {
         if let Some(auto_ended) = repository::latest_auto_ended(pool, guild_id, user_id).await? {
             if ended_at < auto_ended.session.started_at {
@@ -105,10 +116,15 @@ pub async fn end(
     if ended_at < open.started_at {
         return Err(ServiceError::EndBeforeStart);
     }
-    if repository::close_session(pool, open.id, ended_at, note, now).await? == 0 {
-        return Ok(EndOutcome::AlreadyInactive(
-            repository::latest_completed(pool, guild_id, user_id).await?,
-        ));
+    match repository::close_session(pool, open.id, guild_id, user_id, ended_at, note, now).await {
+        Ok(0) => {
+            return Ok(EndOutcome::AlreadyInactive(
+                repository::latest_completed(pool, guild_id, user_id).await?,
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if is_overlap_error(&error) => return Err(ServiceError::OverlappingSession),
+        Err(error) => return Err(error.into()),
     }
     Ok(EndOutcome::Ended(
         repository::get_owned(pool, open.id, guild_id, user_id)
@@ -130,7 +146,7 @@ pub async fn continue_activity(
         return Ok(ContinueOutcome::NothingToContinue);
     };
     let removed_end = latest.ended_at.expect("completed row");
-    match repository::reopen_session(pool, latest.id, now).await {
+    match repository::reopen_session(pool, latest.id, guild_id, user_id, now).await {
         Ok(1) => Ok(ContinueOutcome::Continued {
             session: repository::get_owned(pool, latest.id, guild_id, user_id)
                 .await?
@@ -148,6 +164,13 @@ pub async fn continue_activity(
                     .ok_or(ServiceError::OpenSessionConflict)?,
             ))
         }
+        Err(e) if is_overlap_error(&e) => Err(ServiceError::OverlappingSession),
         Err(e) => Err(e.into()),
     }
+}
+
+fn is_overlap_error(error: &sqlx::Error) -> bool {
+    error
+        .to_string()
+        .contains("attendance session overlaps an existing session")
 }

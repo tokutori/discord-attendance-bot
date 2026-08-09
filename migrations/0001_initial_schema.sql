@@ -5,13 +5,19 @@ CREATE TABLE attendance_sessions (
     display_name TEXT NOT NULL,
     started_at INTEGER NOT NULL,
     ended_at INTEGER,
+    open_since INTEGER,
     note TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     deleted_at INTEGER,
     CHECK (ended_at IS NULL OR ended_at >= started_at),
+    CHECK (
+        (ended_at IS NULL AND open_since IS NOT NULL AND open_since >= started_at)
+        OR (ended_at IS NOT NULL AND open_since IS NULL)
+    ),
     CHECK (length(display_name) BETWEEN 1 AND 100),
-    CHECK (note IS NULL OR length(note) <= 500)
+    CHECK (note IS NULL OR length(note) <= 500),
+    UNIQUE (id, guild_id, user_id)
 );
 
 CREATE UNIQUE INDEX attendance_sessions_one_open_per_user
@@ -26,6 +32,37 @@ CREATE INDEX attendance_sessions_guild_period
 ON attendance_sessions (guild_id, started_at, ended_at)
 WHERE deleted_at IS NULL;
 
+CREATE TRIGGER attendance_sessions_prevent_overlap_insert
+BEFORE INSERT ON attendance_sessions
+WHEN NEW.deleted_at IS NULL
+BEGIN
+    SELECT RAISE(ABORT, 'attendance session overlaps an existing session')
+    WHERE EXISTS (
+        SELECT 1 FROM attendance_sessions existing
+        WHERE existing.guild_id = NEW.guild_id
+          AND existing.user_id = NEW.user_id
+          AND existing.deleted_at IS NULL
+          AND existing.started_at < COALESCE(NEW.ended_at, 9223372036854775807)
+          AND COALESCE(existing.ended_at, 9223372036854775807) > NEW.started_at
+    );
+END;
+
+CREATE TRIGGER attendance_sessions_prevent_overlap_update
+BEFORE UPDATE OF started_at, ended_at, deleted_at ON attendance_sessions
+WHEN NEW.deleted_at IS NULL
+BEGIN
+    SELECT RAISE(ABORT, 'attendance session overlaps an existing session')
+    WHERE EXISTS (
+        SELECT 1 FROM attendance_sessions existing
+        WHERE existing.guild_id = NEW.guild_id
+          AND existing.user_id = NEW.user_id
+          AND existing.id != NEW.id
+          AND existing.deleted_at IS NULL
+          AND existing.started_at < COALESCE(NEW.ended_at, 9223372036854775807)
+          AND COALESCE(existing.ended_at, 9223372036854775807) > NEW.started_at
+    );
+END;
+
 CREATE TABLE attendance_changes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id INTEGER NOT NULL,
@@ -35,18 +72,34 @@ CREATE TABLE attendance_changes (
 
     before_started_at INTEGER,
     before_ended_at INTEGER,
+    before_open_since INTEGER,
     before_note TEXT,
     before_deleted_at INTEGER,
 
     after_started_at INTEGER NOT NULL,
     after_ended_at INTEGER,
+    after_open_since INTEGER,
     after_note TEXT,
     after_deleted_at INTEGER,
 
     created_at INTEGER NOT NULL,
     reverted_at INTEGER,
 
-    FOREIGN KEY (session_id) REFERENCES attendance_sessions (id) ON DELETE CASCADE
+    CHECK (
+        (kind = 'start' AND before_started_at IS NULL)
+        OR (kind != 'start' AND before_started_at IS NOT NULL
+            AND ((before_ended_at IS NULL AND before_open_since IS NOT NULL
+                    AND before_open_since >= before_started_at)
+                OR (before_ended_at IS NOT NULL AND before_open_since IS NULL)))
+    ),
+    CHECK (
+        (after_ended_at IS NULL AND after_open_since IS NOT NULL
+            AND after_open_since >= after_started_at)
+        OR (after_ended_at IS NOT NULL AND after_open_since IS NULL)
+    ),
+    UNIQUE (id, session_id, guild_id, user_id),
+    FOREIGN KEY (session_id, guild_id, user_id)
+        REFERENCES attendance_sessions (id, guild_id, user_id) ON DELETE CASCADE
 );
 
 CREATE INDEX attendance_changes_latest_revertible
@@ -64,6 +117,7 @@ CREATE TABLE pending_attendance_actions (
 
     expected_started_at INTEGER NOT NULL,
     expected_ended_at INTEGER,
+    expected_open_since INTEGER,
     expected_note TEXT,
     expected_deleted_at INTEGER,
 
@@ -75,8 +129,23 @@ CREATE TABLE pending_attendance_actions (
     expires_at INTEGER NOT NULL,
     consumed_at INTEGER,
 
-    FOREIGN KEY (session_id) REFERENCES attendance_sessions (id) ON DELETE CASCADE,
-    FOREIGN KEY (change_id) REFERENCES attendance_changes (id) ON DELETE SET NULL
+    CHECK (expires_at > requested_at),
+    CHECK (
+        (expected_ended_at IS NULL AND expected_open_since IS NOT NULL
+            AND expected_open_since >= expected_started_at)
+        OR (expected_ended_at IS NOT NULL AND expected_open_since IS NULL)
+    ),
+    CHECK (
+        (action = 'edit' AND change_id IS NULL AND target_started_at IS NOT NULL)
+        OR (action = 'delete' AND change_id IS NULL
+            AND target_started_at IS NULL AND target_ended_at IS NULL AND target_note IS NULL)
+        OR (action = 'revert' AND change_id IS NOT NULL
+            AND target_started_at IS NULL AND target_ended_at IS NULL AND target_note IS NULL)
+    ),
+    FOREIGN KEY (session_id, guild_id, user_id)
+        REFERENCES attendance_sessions (id, guild_id, user_id) ON DELETE CASCADE,
+    FOREIGN KEY (change_id, session_id, guild_id, user_id)
+        REFERENCES attendance_changes (id, session_id, guild_id, user_id) ON DELETE CASCADE
 );
 
 CREATE INDEX pending_attendance_actions_owner
@@ -84,15 +153,21 @@ ON pending_attendance_actions (guild_id, user_id, expires_at)
 WHERE consumed_at IS NULL;
 
 CREATE TABLE attendance_auto_end_events (
-    session_id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL,
     guild_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
     automatic_ended_at INTEGER NOT NULL,
     applied_at INTEGER NOT NULL,
     notified_at INTEGER,
     corrected_at INTEGER,
-    FOREIGN KEY (session_id) REFERENCES attendance_sessions (id) ON DELETE CASCADE
+    FOREIGN KEY (session_id, guild_id, user_id)
+        REFERENCES attendance_sessions (id, guild_id, user_id) ON DELETE CASCADE
 );
+
+CREATE UNIQUE INDEX attendance_auto_end_events_one_active
+ON attendance_auto_end_events (session_id)
+WHERE corrected_at IS NULL;
 
 CREATE INDEX attendance_auto_end_events_pending_notice
 ON attendance_auto_end_events (guild_id, user_id, notified_at, applied_at DESC);

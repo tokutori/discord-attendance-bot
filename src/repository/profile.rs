@@ -25,7 +25,7 @@ pub async fn upsert_user_profile(
     update: UserProfileUpdate<'_>,
     now: i64,
 ) -> Result<UserProfile, sqlx::Error> {
-    sqlx::query(
+    sqlx::query_as(
         "INSERT INTO attendance_user_profiles (
             guild_id, user_id, generation, real_name, role, created_at, updated_at
          ) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -33,7 +33,8 @@ pub async fn upsert_user_profile(
             generation = COALESCE(excluded.generation, attendance_user_profiles.generation),
             real_name = COALESCE(excluded.real_name, attendance_user_profiles.real_name),
             role = COALESCE(excluded.role, attendance_user_profiles.role),
-            updated_at = excluded.updated_at",
+            updated_at = excluded.updated_at
+         RETURNING guild_id, user_id, generation, real_name, role, updated_at",
     )
     .bind(guild_id)
     .bind(user_id)
@@ -42,12 +43,8 @@ pub async fn upsert_user_profile(
     .bind(update.role)
     .bind(now)
     .bind(now)
-    .execute(pool)
-    .await?;
-
-    get_user_profile(pool, guild_id, user_id)
-        .await?
-        .ok_or(sqlx::Error::RowNotFound)
+    .fetch_one(pool)
+    .await
 }
 
 pub async fn user_profiles_for_export(
