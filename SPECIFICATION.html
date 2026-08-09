@@ -150,7 +150,7 @@
         </tbody>
       </table>
       <p>引数は必須であり、未指定または不正な値の場合は起動しない。両モードとも指定した guild にのみ command を登録し、global command は使用しない。</p>
-      <p>各モードでは <code>ATTENDANCE_STATUS_CHANNEL_ID_TEST</code> または <code>ATTENDANCE_STATUS_CHANNEL_ID_RELEASE</code> で指定した専用テキストチャンネルの Topic と Bot の Activity を、活動中メンバーの人数・表示名・最終更新時刻で更新する。Activity の種別は、Bot が活動状況を監視している意味に合わせて <code>Watching</code> を使用する。Activity は活動記録の変更時に即時更新し、Topic は Bot 起動時および10分ごとに更新する。Topic の周期更新時には Activity も同時に更新する。Activity は 128 文字を超える部分を省略し、Topic は 1024 文字まで保持する。</p>
+      <p>各モードでは <code>ATTENDANCE_STATUS_CHANNEL_ID_TEST</code> または <code>ATTENDANCE_STATUS_CHANNEL_ID_RELEASE</code> で指定した専用テキストチャンネルの Topic と Bot の Activity を、活動中メンバーの人数・表示名・最終更新時刻で更新する。Activity の種別は、Bot が活動状況を監視している意味に合わせて <code>Watching</code> を使用する。Activity は活動記録の変更時に即時更新し、Topic は Bot 起動直後（周期処理の初回実行）および10分ごとに更新する。Topic の周期更新時には Activity も同時に更新する。Activity は 128 文字を超える部分を省略し、Topic は 1024 文字まで保持する。これらは Discord の Activity とチャンネル Topic であり、Embed 応答とは別の表示領域である。</p>
     </section>
 
     <section>
@@ -165,6 +165,11 @@
         </thead>
         <tbody>
           <tr>
+            <td><code>/attendance help</code></td>
+            <td>なし</td>
+            <td>利用可能なコマンドと引数を Embed で表示する。</td>
+          </tr>
+          <tr>
             <td><code>/attendance start</code></td>
             <td><code>at</code>, <code>note</code></td>
             <td>活動を開始する。</td>
@@ -178,6 +183,11 @@
             <td><code>/attendance continue</code></td>
             <td>なし</td>
             <td>直前の終了操作を取り消し、同じ記録を活動中へ戻す。</td>
+          </tr>
+          <tr>
+            <td><code>/attendance revert</code></td>
+            <td>なし</td>
+            <td>直前の成功した変更操作を1件取り消す。</td>
           </tr>
           <tr>
             <td><code>/attendance status</code></td>
@@ -202,7 +212,12 @@
           <tr>
             <td><code>/attendance delete</code></td>
             <td><code>record</code></td>
-            <td>本人の記録を削除する。</td>
+            <td>削除内容を表示し、確認IDを発行する。</td>
+          </tr>
+          <tr>
+            <td><code>/attendance confirm</code></td>
+            <td><code>id</code></td>
+            <td><code>edit</code>、<code>delete</code>、<code>revert</code> の確認要求を確定する。</td>
           </tr>
         </tbody>
       </table>
@@ -265,7 +280,22 @@
     <section>
       <h2>5. 各コマンドの仕様</h2>
 
-      <h3>5.1 <code>/attendance start</code></h3>
+      <h3>5.1 <code>/attendance help</code></h3>
+      <p>利用可能なコマンドと引数を Embed で表示する。応答は本人にだけ表示される。</p>
+
+      <h4>表示内容</h4>
+      <pre><code>/attendance start [at] [note]
+/attendance end [at] [note]
+/attendance continue
+/attendance revert
+/attendance status
+/attendance history [limit]
+/attendance month [target]
+/attendance edit record [start] [end] [note]
+/attendance delete record
+/attendance confirm id</code></pre>
+
+      <h3>5.2 <code>/attendance start</code></h3>
       <p>新しい活動記録を開始する。</p>
 
       <h4>引数</h4>
@@ -294,7 +324,7 @@
 記録ID: #128</code></pre>
       <p><code>at</code> や <code>note</code> が指定されても、重複開始時には既存記録へ反映しない。修正は <code>/attendance edit</code> で行う。</p>
 
-      <h3>5.2 <code>/attendance end</code></h3>
+      <h3>5.3 <code>/attendance end</code></h3>
       <p>現在活動中の記録を終了する。</p>
 
       <h4>引数</h4>
@@ -324,8 +354,10 @@
 活動時間: 4時間30分
 記録ID: #128</code></pre>
 
-      <h3>5.3 <code>/attendance continue</code></h3>
+      <h3>5.4 <code>/attendance continue</code></h3>
       <p>直前の <code>/attendance end</code> を取り消す。新しい記録は作らず、直近の終了済み記録の <code>ended_at</code> を <code>NULL</code> に戻す。</p>
+      <p><code>/attendance revert</code> は <code>start</code>、<code>end</code>、<code>continue</code>、<code>edit</code>、<code>delete</code> の直前の成功した変更操作を1件取り消す。<code>start</code> は作成記録を soft delete、<code>end</code> は終了前、<code>continue</code> は continue 前、<code>edit</code> は編集前、<code>delete</code> は削除前の状態へ復元する。取り消し対象のスナップショットは DB に保存する。1回確定した後に再度 <code>revert</code> と <code>confirm</code> を行うことで、過去の変更を順に取り消せる。</p>
+      <p><code>revert</code> 自体は操作履歴に追加しないため、連続実行ではさらに前の成功した変更操作を順に取り消す。たとえば <code>start → end → revert → revert</code> では、1回目に <code>end</code> を取り消して活動中へ戻し、2回目に <code>start</code> を取り消して作成記録を soft delete する。対象がない場合、または現在の記録がスナップショットと一致しない場合は DB を変更せず no-op とする。</p>
 
       <h4>想定例</h4>
       <pre><code>13:00 start
@@ -352,7 +384,7 @@
       <h4>過去記録がない場合</h4>
       <pre><code>継続できる直近の活動記録がない。</code></pre>
 
-      <h3>5.4 <code>/attendance status</code></h3>
+      <h3>5.5 <code>/attendance status</code></h3>
       <p>現在活動中か確認する。</p>
 
       <h4>活動中</h4>
@@ -366,7 +398,7 @@
       <h4>非活動中</h4>
       <pre><code>現在、活動中の記録はない。</code></pre>
 
-      <h3>5.5 <code>/attendance history</code></h3>
+      <h3>5.6 <code>/attendance history</code></h3>
       <p>本人の最近の活動記録を Embed で一覧表示する。</p>
 
       <h4>引数</h4>
@@ -400,7 +432,7 @@ Pixhawkログ解析
 
       <p>備考が空の場合は備考行を省略する。活動中の記録は先頭に表示する。日を跨ぐ場合は開始日と終了日の両方を表示する。</p>
 
-      <h3>5.6 <code>/attendance month</code></h3>
+      <h3>5.7 <code>/attendance month</code></h3>
       <p>本人の指定月の活動時間を Embed で表示する。ランキングは提供しない。</p>
 
       <h4>引数</h4>
@@ -434,8 +466,9 @@ Bem130
 
       <p>月を跨ぐ記録は、対象月に含まれる時間だけを集計する。</p>
 
-      <h3>5.7 <code>/attendance edit</code></h3>
+      <h3>5.8 <code>/attendance edit</code></h3>
       <p>本人の既存記録を修正する。</p>
+      <p>最初の実行では変更前後を表示し、5分間有効な5文字の確認IDを発行する。この時点では DB を変更しない。<code>/attendance confirm</code> に確認IDを指定したとき、プレビュー時の状態と現在の状態が一致すれば修正を確定する。一致しなければ安全のため確定しない。</p>
 
       <h4>引数</h4>
       <table>
@@ -452,8 +485,9 @@ Bem130
 
       <p><code>start</code>、<code>end</code>、<code>note</code> のうち少なくとも1つを指定する。本人の記録だけを修正可能とする。</p>
 
-      <h3>5.8 <code>/attendance delete</code></h3>
+      <h3>5.9 <code>/attendance delete</code></h3>
       <p>本人の活動記録を削除する。</p>
+      <p>最初の実行では削除対象の内容を表示し、5分間有効な確認IDを発行する。<code>/attendance confirm</code> で確定するまで DB は変更しない。確定後は <code>deleted_at</code> を設定する。</p>
 
       <h4>引数</h4>
       <table>
@@ -465,7 +499,19 @@ Bem130
         </tbody>
       </table>
 
-      <p>削除前に確認ボタンを表示することが望ましい。DB 上では物理削除せず、<code>deleted_at</code> を設定する soft delete とする。</p>
+      <p>確認IDによる <code>/attendance confirm</code> で削除を明示的に確認する。DB 上では物理削除せず、<code>deleted_at</code> を設定する soft delete とする。</p>
+
+      <h3>5.10 <code>/attendance confirm</code></h3>
+      <p><code>edit</code>、<code>delete</code>、<code>revert</code> が発行した5文字の確認IDを指定して変更を確定する。確認IDの有効期限は発行から5分で、使用済みIDは再利用できない。確認前に別の変更が行われ、プレビュー時の状態と一致しなくなった場合は確定せず、要求を無効化する。</p>
+      <h4>引数</h4>
+      <table>
+        <thead>
+          <tr><th>引数</th><th>必須</th><th>例</th><th>意味</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>id</code></td><td>必須</td><td><code>AB3KQ</code></td><td>プレビュー時に発行された確認ID。</td></tr>
+        </tbody>
+      </table>
     </section>
 
     <section>
@@ -515,6 +561,7 @@ ON attendance_sessions (
     started_at DESC
 )
 WHERE deleted_at IS NULL;</code></pre>
+      <p><code>revert</code> 用に <code>attendance_operations</code> テーブルも使用する。各成功した変更操作について、guild・user・対象記録・操作種別・操作前後の開始時刻・終了時刻・備考・削除時刻を保存し、<code>reverted_at</code> で取り消し済みかを管理する。取り消し処理は最新の未取り消し操作を対象とし、現在状態が保存済みの操作後状態と一致しない場合は安全のため実行しない。</p>
     </section>
 
     <section>
@@ -526,6 +573,7 @@ WHERE deleted_at IS NULL;</code></pre>
         <li>編集・削除時は、SQL 条件に <code>guild_id</code> と <code>user_id</code> を含める。</li>
         <li>削除済み記録は通常の検索・集計から除外する。</li>
         <li>表示名は参考情報として保存する。本人識別には Discord user ID を使用する。</li>
+        <li>成功した <code>start</code>、<code>end</code>、<code>continue</code>、<code>edit</code>、<code>delete</code> は <code>revert</code> 用の操作履歴を作成する。no-op や失敗した操作は履歴に追加しない。</li>
       </ul>
     </section>
 
@@ -559,10 +607,13 @@ duration        = max(effective_end - effective_start, 0)</code></pre>
       <h2>10. 応答の表示方針</h2>
       <ul>
         <li>通常の操作結果は原則として ephemeral response とする。</li>
-        <li><code>history</code> と <code>month</code> は Embed を使用する。</li>
+        <li>Slash Command の利用者向け応答は、成功結果・想定内の入力エラー・権限エラーを含め、原則として本人だけが見られる ephemeral Embed を使用する。</li>
+        <li><code>history</code>、<code>month</code>、<code>help</code> は専用レイアウトの Embed を使用する。</li>
+        <li><code>revert</code> は直前の成功した変更操作を1件取り消し、操作内容と対象記録を Embed で説明する。<code>revert</code> 自体は履歴に積まれないため、連続実行では過去の変更を順に取り消せる。</li>
         <li>表示内容は簡潔にし、記録ID、時刻、時間、備考を中心とする。</li>
         <li>備考がない場合は空の備考欄を表示しない。</li>
-        <li>エラー時も可能な限り現在状態または直近記録を表示する。</li>
+        <li>Embed の Discord 上限（説明 4096 文字、フィールド値 1024 文字、メッセージ全体 6000 文字）を超えないようにする。履歴が長い場合は表示本文を安全に省略する。</li>
+        <li>Bot の Activity とチャンネル Topic は Embed ではなく、それぞれの Discord 表示領域で更新する。</li>
       </ul>
     </section>
 
@@ -572,14 +623,7 @@ duration        = max(effective_end - effective_start, 0)</code></pre>
 ├── main.rs
 ├── commands/
 │   ├── mod.rs
-│   ├── start.rs
-│   ├── end.rs
-│   ├── continue_activity.rs
-│   ├── status.rs
-│   ├── history.rs
-│   ├── month.rs
-│   ├── edit.rs
-│   └── delete.rs
+│   └── attendance.rs
 ├── attendance/
 │   ├── mod.rs
 │   ├── model.rs
@@ -591,7 +635,7 @@ duration        = max(effective_end - effective_start, 0)</code></pre>
 └── presentation/
     ├── mod.rs
     ├── embeds.rs
-    └── format.rs</code></pre>
+    └── status_topic.rs</code></pre>
 
       <p>Discord interaction、domain logic、SQLite 操作、Embed 生成を分離する。月間集計や時間重複計算は Discord に依存しない純粋関数として実装する。</p>
     </section>
@@ -599,6 +643,7 @@ duration        = max(effective_end - effective_start, 0)</code></pre>
     <section>
       <h2>12. 初期実装の優先順位</h2>
       <ol>
+        <li><code>/attendance help</code></li>
         <li><code>/attendance start</code></li>
         <li><code>/attendance end</code></li>
         <li><code>/attendance continue</code></li>

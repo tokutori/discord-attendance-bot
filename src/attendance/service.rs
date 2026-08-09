@@ -23,6 +23,13 @@ pub enum ContinueOutcome {
     NothingToContinue,
 }
 
+#[derive(Debug)]
+pub enum RevertOutcome {
+    Reverted { operation: String, session_id: i64 },
+    NothingToRevert,
+    Conflict,
+}
+
 #[derive(Debug, Error)]
 pub enum ServiceError {
     #[error("終了時刻は開始時刻以降である必要がある")]
@@ -125,4 +132,25 @@ pub async fn continue_activity(
         }
         Err(e) => Err(e.into()),
     }
+}
+
+pub async fn revert(
+    pool: &SqlitePool,
+    guild_id: i64,
+    user_id: i64,
+    now: i64,
+) -> Result<RevertOutcome, ServiceError> {
+    Ok(
+        match repository::revert_latest(pool, guild_id, user_id, now).await? {
+            repository::RevertResult::Reverted {
+                operation,
+                session_id,
+            } => RevertOutcome::Reverted {
+                operation,
+                session_id,
+            },
+            repository::RevertResult::NothingToRevert => RevertOutcome::NothingToRevert,
+            repository::RevertResult::Conflict => RevertOutcome::Conflict,
+        },
+    )
 }

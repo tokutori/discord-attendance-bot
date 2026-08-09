@@ -7,11 +7,14 @@
 - `/attendance start [at] [note]`
 - `/attendance end [at] [note]`
 - `/attendance continue`
+- `/attendance revert`
 - `/attendance status`
 - `/attendance history [limit]`
 - `/attendance month [target]`
 - `/attendance edit record [start] [end] [note]`
-- `/attendance delete record confirm`
+- `/attendance delete record`
+- `/attendance confirm id`
+- `/attendance help`
 
 `at` は `HH:MM`、`target` は `YYYY-MM`、編集日時は `YYYY-MM-DD HH:MM` 形式で入力する。時刻入力と表示は日本時間、SQLite 内部では UTC Unix timestamp を使用する。
 
@@ -75,6 +78,8 @@ BotのActivityは活動記録の変更時に即時更新する。専用チャン
 
 Activityの種別は、Botが活動状況を監視している意味に合わせて `Watching` を使用する。
 
+Slash Command の操作結果・入力エラー・権限エラーなど、利用者向けの応答は原則として ephemeral Embed で表示する。`history`、`month`、`help` は専用の Embed レイアウトを使用する。
+
 ```text
 :green_circle: 現在2名活動中
 (1) Bem130
@@ -107,8 +112,12 @@ VACUUM INTO 'attendance-backup.db';
 - 重複 `start` は既存の活動中記録を表示し、DBを変更しない。
 - 重複 `end` は直近の終了済み記録を表示し、DBを変更しない。
 - `continue` は直近の終了済み記録の終了時刻を取り消す。
+- `edit`、`delete`、`revert` は最初に変更内容をプレビューし、5分間有効な5文字の確認IDを発行する。`/attendance confirm id:<ID>` で確定するまで DB は変更しない。
+- `revert` は直前の成功した変更操作を1件だけ取り消す。`start` は作成記録を soft delete、`end` は終了前、`continue` は continue 前、`edit` は編集前、`delete` は削除前へ復元する。`revert` 自体は操作履歴に積まれないため、1回確定した後に再度 `revert` → `confirm` を行えば、過去の変更を順に取り消せる。対象がなければ安全な no-op とする。
+- 確認前に別の変更が入った場合、プレビュー時の状態と一致しないため安全のため確定しない。確認IDは使用済みになる。
 - `edit` で `end` を空文字として入力すると活動中へ戻せる。ただし、別の活動中記録がある場合は拒否する。
-- `delete` は `confirm:true` が必要で、DB上では soft delete する。
+- `delete` は confirm で確定し、DB上では soft delete する。
+- `/attendance help` で利用可能なコマンドと引数を確認できる。
 - 月次集計は月境界および日境界で分割し、日本時間基準で算出する。
 
 ## ディレクトリ

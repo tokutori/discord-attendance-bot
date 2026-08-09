@@ -1,10 +1,153 @@
 use std::{env, str::FromStr};
 
 use anyhow::Context as _;
-use discord_attendance_bot::{Data, channel_status, commands, config};
+use discord_attendance_bot::{Data, channel_status, commands, config, presentation};
 use poise::serenity_prelude as serenity;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use tracing::info;
+
+async fn handle_error(
+    error: poise::FrameworkError<'_, Data, anyhow::Error>,
+) -> Result<(), serenity::Error> {
+    use poise::FrameworkError;
+
+    match error {
+        FrameworkError::Command { ctx, error, .. } => {
+            tracing::error!(%error, "attendance command failed");
+            ctx.send(
+                poise::CreateReply::default()
+                    .embed(presentation::error_embed(
+                        "処理に失敗した",
+                        "処理中にエラーが発生した。時間を置いて再試行してほしい。",
+                    ))
+                    .ephemeral(true),
+            )
+            .await?;
+        }
+        FrameworkError::ArgumentParse { ctx, error, .. } => {
+            ctx.send(
+                poise::CreateReply::default()
+                    .embed(presentation::error_embed(
+                        "入力を確認してください",
+                        error.to_string(),
+                    ))
+                    .ephemeral(true),
+            )
+            .await?;
+        }
+        FrameworkError::SubcommandRequired { ctx } => {
+            ctx.send(
+                poise::CreateReply::default()
+                    .embed(presentation::response_embed(
+                        "サブコマンドが必要",
+                        "`/attendance help` で利用可能なコマンドを確認できる。",
+                    ))
+                    .ephemeral(true),
+            )
+            .await?;
+        }
+        FrameworkError::CommandPanic { ctx, .. } => {
+            tracing::error!("attendance command panicked");
+            ctx.send(
+                poise::CreateReply::default()
+                    .embed(presentation::error_embed(
+                        "内部エラー",
+                        "予期しないエラーが発生した。時間を置いて再試行してほしい。",
+                    ))
+                    .ephemeral(true),
+            )
+            .await?;
+        }
+        FrameworkError::CooldownHit {
+            remaining_cooldown,
+            ctx,
+            ..
+        } => {
+            ctx.send(
+                poise::CreateReply::default()
+                    .embed(presentation::response_embed(
+                        "少し待ってください",
+                        format!(
+                            "{}秒後にもう一度実行してほしい。",
+                            remaining_cooldown.as_secs()
+                        ),
+                    ))
+                    .ephemeral(true),
+            )
+            .await?;
+        }
+        FrameworkError::MissingBotPermissions {
+            missing_permissions,
+            ctx,
+            ..
+        } => {
+            ctx.send(
+                poise::CreateReply::default()
+                    .embed(presentation::error_embed(
+                        "Bot の権限が不足",
+                        format!("必要な権限: {missing_permissions}"),
+                    ))
+                    .ephemeral(true),
+            )
+            .await?;
+        }
+        FrameworkError::MissingUserPermissions {
+            missing_permissions,
+            ctx,
+            ..
+        } => {
+            let description = missing_permissions
+                .map(|permissions| format!("必要な権限: {permissions}"))
+                .unwrap_or_else(|| "必要な権限を確認できなかった。".into());
+            ctx.send(
+                poise::CreateReply::default()
+                    .embed(presentation::error_embed("ユーザー権限が不足", description))
+                    .ephemeral(true),
+            )
+            .await?;
+        }
+        FrameworkError::GuildOnly { ctx, .. } => {
+            ctx.send(
+                poise::CreateReply::default()
+                    .embed(presentation::error_embed(
+                        "サーバー内で実行してください",
+                        "このコマンドは Discord サーバー内でのみ使用できる。",
+                    ))
+                    .ephemeral(true),
+            )
+            .await?;
+        }
+        FrameworkError::DmOnly { ctx, .. } => {
+            ctx.send(
+                poise::CreateReply::default()
+                    .embed(presentation::error_embed(
+                        "ダイレクトメッセージで実行してください",
+                        "このコマンドは DM でのみ使用できる。",
+                    ))
+                    .ephemeral(true),
+            )
+            .await?;
+        }
+        FrameworkError::NsfwOnly { ctx, .. } => {
+            ctx.send(
+                poise::CreateReply::default()
+                    .embed(presentation::error_embed(
+                        "NSFW チャンネルで実行してください",
+                        "このコマンドは NSFW チャンネルでのみ使用できる。",
+                    ))
+                    .ephemeral(true),
+            )
+            .await?;
+        }
+        other => {
+            if let Err(error) = poise::builtins::on_error(other).await {
+                tracing::error!(%error, "failed to send framework error response");
+            }
+        }
+    }
+
+    Ok(())
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -39,8 +182,8 @@ async fn main() -> anyhow::Result<()> {
             commands: vec![commands::attendance()],
             on_error: |error| {
                 Box::pin(async move {
-                    if let Err(error) = poise::builtins::on_error(error).await {
-                        tracing::error!(%error, "failed to send command error response");
+                    if let Err(error) = handle_error(error).await {
+                        tracing::error!(%error, "failed to send framework error response");
                     }
                 })
             },
