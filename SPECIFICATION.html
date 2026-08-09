@@ -1,0 +1,612 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Discord 活動時間記録 Bot 仕様書</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", sans-serif;
+      line-height: 1.75;
+      font-size: 16px;
+      color: #222;
+      background: #fff;
+    }
+
+    body {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 40px 24px 64px;
+    }
+
+    h1, h2, h3, h4 {
+      line-height: 1.35;
+      margin-top: 2em;
+      margin-bottom: 0.75em;
+    }
+
+    h1 {
+      margin-top: 0;
+      font-size: 2rem;
+    }
+
+    h2 {
+      border-bottom: 1px solid #ccc;
+      padding-bottom: 0.25em;
+      font-size: 1.5rem;
+    }
+
+    h3 {
+      font-size: 1.2rem;
+    }
+
+    p, ul, ol, table, pre {
+      margin-top: 0.75em;
+      margin-bottom: 1em;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 0.95em;
+      background: #f5f5f5;
+      padding: 0.1em 0.3em;
+      border-radius: 3px;
+    }
+
+    pre {
+      overflow-x: auto;
+      padding: 1em;
+      background: #f7f7f7;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th, td {
+      border: 1px solid #ccc;
+      padding: 0.55em 0.7em;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #f3f3f3;
+    }
+
+    .meta {
+      color: #555;
+      margin-bottom: 2em;
+    }
+
+    .note {
+      border-left: 4px solid #999;
+      padding: 0.5em 1em;
+      background: #fafafa;
+    }
+
+    .status-active {
+      font-weight: 600;
+    }
+
+    @media print {
+      body {
+        max-width: none;
+        padding: 16mm;
+      }
+
+      pre, table {
+        break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Discord 活動時間記録 Bot 仕様書</h1>
+    <p class="meta">対象: 鳥人間チームのメンバーごとの活動時間記録<br>実装言語: Rust<br>保存先: SQLite<br>作成日: 2026-08-06</p>
+  </header>
+
+  <main>
+    <section>
+      <h2>1. 目的</h2>
+      <p>Discord 上で各メンバーが活動開始・活動終了を記録し、個人ごとの活動履歴および月間活動時間を確認できる Bot を実装する。</p>
+      <p>本システムは給与計算や法令対応を目的とする厳密な勤怠管理システムではない。鳥人間チーム内の活動量を概算記録し、本人が後から修正できることを重視する。</p>
+    </section>
+
+    <section>
+      <h2>2. 基本構成</h2>
+      <ul>
+        <li>Discord の Slash Command を操作入口とする。</li>
+        <li>Rust 製 Bot が command を処理する。</li>
+        <li>活動記録は SQLite に保存する。</li>
+        <li>Google Spreadsheet 等への同期は行わない。</li>
+        <li>各メンバーは自分の記録だけを閲覧・修正・削除できる。</li>
+      </ul>
+
+      <pre><code>Discord
+  └─ /attendance ...
+       └─ Rust Bot
+            └─ SQLite</code></pre>
+    </section>
+
+    <section>
+      <h2>3. コマンド一覧</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>コマンド</th>
+            <th>引数</th>
+            <th>説明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>/attendance start</code></td>
+            <td><code>at</code>, <code>note</code></td>
+            <td>活動を開始する。</td>
+          </tr>
+          <tr>
+            <td><code>/attendance end</code></td>
+            <td><code>at</code>, <code>note</code></td>
+            <td>現在の活動を終了する。</td>
+          </tr>
+          <tr>
+            <td><code>/attendance continue</code></td>
+            <td>なし</td>
+            <td>直前の終了操作を取り消し、同じ記録を活動中へ戻す。</td>
+          </tr>
+          <tr>
+            <td><code>/attendance status</code></td>
+            <td>なし</td>
+            <td>現在活動中か確認する。</td>
+          </tr>
+          <tr>
+            <td><code>/attendance history</code></td>
+            <td><code>limit</code></td>
+            <td>最近の活動記録を表示する。</td>
+          </tr>
+          <tr>
+            <td><code>/attendance month</code></td>
+            <td><code>target</code></td>
+            <td>指定月の本人の活動時間を Embed で表示する。</td>
+          </tr>
+          <tr>
+            <td><code>/attendance edit</code></td>
+            <td><code>record</code>, <code>start</code>, <code>end</code>, <code>note</code></td>
+            <td>本人の既存記録を修正する。</td>
+          </tr>
+          <tr>
+            <td><code>/attendance delete</code></td>
+            <td><code>record</code></td>
+            <td>本人の記録を削除する。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>4. 状態モデル</h2>
+      <p>利用者ごとの状態は、活動中と非活動中の2状態とする。</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>現在状態</th>
+            <th>操作</th>
+            <th>遷移後</th>
+            <th>処理</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>非活動中</td>
+            <td><code>start</code></td>
+            <td>活動中</td>
+            <td>新しい未終了記録を作成する。</td>
+          </tr>
+          <tr>
+            <td>活動中</td>
+            <td><code>end</code></td>
+            <td>非活動中</td>
+            <td>現在の未終了記録へ終了時刻を設定する。</td>
+          </tr>
+          <tr>
+            <td>非活動中</td>
+            <td><code>continue</code></td>
+            <td>活動中</td>
+            <td>直近の終了済み記録の終了時刻を削除する。</td>
+          </tr>
+          <tr>
+            <td>活動中</td>
+            <td><code>start</code></td>
+            <td>活動中</td>
+            <td>重複開始として no-op にする。</td>
+          </tr>
+          <tr>
+            <td>非活動中</td>
+            <td><code>end</code></td>
+            <td>非活動中</td>
+            <td>重複終了として no-op にする。</td>
+          </tr>
+          <tr>
+            <td>活動中</td>
+            <td><code>continue</code></td>
+            <td>活動中</td>
+            <td>すでに活動中であることを表示する。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>5. 各コマンドの仕様</h2>
+
+      <h3>5.1 <code>/attendance start</code></h3>
+      <p>新しい活動記録を開始する。</p>
+
+      <h4>引数</h4>
+      <table>
+        <thead>
+          <tr><th>引数</th><th>必須</th><th>例</th><th>意味</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>at</code></td><td>任意</td><td><code>13:30</code></td><td>開始時刻。省略時は現在時刻。</td></tr>
+          <tr><td><code>note</code></td><td>任意</td><td><code>Pixhawkログ解析</code></td><td>活動内容の備考。</td></tr>
+        </tbody>
+      </table>
+
+      <h4>正常時</h4>
+      <pre><code>活動を開始した。
+開始時刻: 2026年8月6日 13:30
+記録ID: #128</code></pre>
+
+      <h4>重複時</h4>
+      <p>既に活動中なら、新しい記録を作成せず、既存の記録も変更しない。</p>
+      <pre><code>すでに活動中である。
+
+開始時刻: 2026年8月6日 13:30
+経過時間: 3時間34分
+備考: Pixhawkログ解析
+記録ID: #128</code></pre>
+      <p><code>at</code> や <code>note</code> が指定されても、重複開始時には既存記録へ反映しない。修正は <code>/attendance edit</code> で行う。</p>
+
+      <h3>5.2 <code>/attendance end</code></h3>
+      <p>現在活動中の記録を終了する。</p>
+
+      <h4>引数</h4>
+      <table>
+        <thead>
+          <tr><th>引数</th><th>必須</th><th>例</th><th>意味</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>at</code></td><td>任意</td><td><code>18:00</code></td><td>終了時刻。省略時は現在時刻。</td></tr>
+          <tr><td><code>note</code></td><td>任意</td><td><code>センサ試験完了</code></td><td>終了時に記録へ設定する備考。</td></tr>
+        </tbody>
+      </table>
+
+      <h4>正常時</h4>
+      <pre><code>活動を終了した。
+開始時刻: 2026年8月6日 13:30
+終了時刻: 2026年8月6日 18:00
+活動時間: 4時間30分
+記録ID: #128</code></pre>
+
+      <h4>重複時</h4>
+      <p>未終了記録が存在しない場合は、直近の終了済み記録を表示する。DB は変更しない。</p>
+      <pre><code>現在、活動中の記録はない。
+
+直近の活動:
+2026年8月6日 13:30 ～ 18:00
+活動時間: 4時間30分
+記録ID: #128</code></pre>
+
+      <h3>5.3 <code>/attendance continue</code></h3>
+      <p>直前の <code>/attendance end</code> を取り消す。新しい記録は作らず、直近の終了済み記録の <code>ended_at</code> を <code>NULL</code> に戻す。</p>
+
+      <h4>想定例</h4>
+      <pre><code>13:00 start
+18:00 end
+18:05 continue
+21:00 end</code></pre>
+      <p>最終的な記録は <code>13:00 ～ 21:00</code> の1件となる。</p>
+
+      <h4>正常時</h4>
+      <pre><code>活動を継続状態に戻した。
+
+開始時刻: 2026年8月6日 13:00
+取り消した終了時刻: 2026年8月6日 18:00
+現在の経過時間: 6時間05分
+記録ID: #128</code></pre>
+
+      <h4>すでに活動中の場合</h4>
+      <pre><code>すでに活動中である。
+
+開始時刻: 2026年8月6日 13:00
+経過時間: 6時間05分
+記録ID: #128</code></pre>
+
+      <h4>過去記録がない場合</h4>
+      <pre><code>継続できる直近の活動記録がない。</code></pre>
+
+      <h3>5.4 <code>/attendance status</code></h3>
+      <p>現在活動中か確認する。</p>
+
+      <h4>活動中</h4>
+      <pre><code>活動中
+
+開始時刻: 2026年8月6日 13:30
+経過時間: 5時間28分
+備考: Pixhawkログ解析
+記録ID: #128</code></pre>
+
+      <h4>非活動中</h4>
+      <pre><code>現在、活動中の記録はない。</code></pre>
+
+      <h3>5.5 <code>/attendance history</code></h3>
+      <p>本人の最近の活動記録を Embed で一覧表示する。</p>
+
+      <h4>引数</h4>
+      <table>
+        <thead>
+          <tr><th>引数</th><th>必須</th><th>既定値</th><th>範囲</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>limit</code></td><td>任意</td><td>5</td><td>1〜20</td></tr>
+        </tbody>
+      </table>
+
+      <h4>表示例</h4>
+      <pre><code>最近の活動記録
+Bem130
+
+🟢 #131  活動中
+2026/08/06 18:30 ～ 現在
+経過時間: 49分
+センサ試験
+
+#128  2026/08/06
+13:30 ～ 18:00  4時間30分
+Pixhawkログ解析
+
+#124  2026/08/05
+15:10 ～ 17:40  2時間30分
+電装配線
+
+表示中の合計: 7時間49分</code></pre>
+
+      <p>備考が空の場合は備考行を省略する。活動中の記録は先頭に表示する。日を跨ぐ場合は開始日と終了日の両方を表示する。</p>
+
+      <h3>5.6 <code>/attendance month</code></h3>
+      <p>本人の指定月の活動時間を Embed で表示する。ランキングは提供しない。</p>
+
+      <h4>引数</h4>
+      <table>
+        <thead>
+          <tr><th>引数</th><th>必須</th><th>例</th><th>意味</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>target</code></td><td>任意</td><td><code>2026-08</code></td><td>対象月。省略時は当月。</td></tr>
+        </tbody>
+      </table>
+
+      <h4>表示例</h4>
+      <pre><code>2026年8月の活動記録
+Bem130
+
+合計活動時間
+42時間35分
+
+活動回数
+12回
+
+1回あたり平均
+3時間33分
+
+日別
+08/01  4時間20分
+08/03  2時間15分
+08/05  6時間10分
+08/06  3時間30分</code></pre>
+
+      <p>月を跨ぐ記録は、対象月に含まれる時間だけを集計する。</p>
+
+      <h3>5.7 <code>/attendance edit</code></h3>
+      <p>本人の既存記録を修正する。</p>
+
+      <h4>引数</h4>
+      <table>
+        <thead>
+          <tr><th>引数</th><th>必須</th><th>例</th><th>意味</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>record</code></td><td>必須</td><td><code>128</code></td><td>修正対象の記録ID。</td></tr>
+          <tr><td><code>start</code></td><td>任意</td><td><code>2026-08-06 13:30</code></td><td>修正後の開始日時。</td></tr>
+          <tr><td><code>end</code></td><td>任意</td><td><code>2026-08-06 18:00</code></td><td>修正後の終了日時。</td></tr>
+          <tr><td><code>note</code></td><td>任意</td><td><code>電装作業</code></td><td>修正後の備考。</td></tr>
+        </tbody>
+      </table>
+
+      <p><code>start</code>、<code>end</code>、<code>note</code> のうち少なくとも1つを指定する。本人の記録だけを修正可能とする。</p>
+
+      <h3>5.8 <code>/attendance delete</code></h3>
+      <p>本人の活動記録を削除する。</p>
+
+      <h4>引数</h4>
+      <table>
+        <thead>
+          <tr><th>引数</th><th>必須</th><th>例</th><th>意味</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>record</code></td><td>必須</td><td><code>128</code></td><td>削除対象の記録ID。</td></tr>
+        </tbody>
+      </table>
+
+      <p>削除前に確認ボタンを表示することが望ましい。DB 上では物理削除せず、<code>deleted_at</code> を設定する soft delete とする。</p>
+    </section>
+
+    <section>
+      <h2>6. 時刻の扱い</h2>
+      <ul>
+        <li>DB には UTC の Unix timestamp を保存する。</li>
+        <li>利用者向け表示は日本時間で行う。</li>
+        <li><code>at</code> には <code>HH:MM</code> 形式を許可する。</li>
+        <li><code>edit</code> には <code>YYYY-MM-DD HH:MM</code> 形式を使用する。</li>
+        <li>終了時刻が開始時刻より前になる場合は、保存前に確認またはエラー表示を行う。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>7. SQLite schema</h2>
+      <pre><code>CREATE TABLE attendance_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    display_name TEXT NOT NULL,
+
+    started_at INTEGER NOT NULL,
+    ended_at INTEGER,
+
+    note TEXT,
+
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+
+    CHECK (
+        ended_at IS NULL
+        OR ended_at &gt;= started_at
+    )
+);
+
+CREATE UNIQUE INDEX one_open_session_per_user
+ON attendance_sessions (guild_id, user_id)
+WHERE ended_at IS NULL
+  AND deleted_at IS NULL;
+
+CREATE INDEX attendance_sessions_user_history
+ON attendance_sessions (
+    guild_id,
+    user_id,
+    started_at DESC
+)
+WHERE deleted_at IS NULL;</code></pre>
+    </section>
+
+    <section>
+      <h2>8. データ操作規則</h2>
+      <ul>
+        <li>未終了記録は、同一 guild・同一 user につき最大1件とする。</li>
+        <li>重複 <code>start</code> と重複 <code>end</code> はエラー終了させず、no-op として現在状態を表示する。</li>
+        <li><code>continue</code> は新しい記録を作らず、直近終了記録を再び未終了状態へ戻す。</li>
+        <li>編集・削除時は、SQL 条件に <code>guild_id</code> と <code>user_id</code> を含める。</li>
+        <li>削除済み記録は通常の検索・集計から除外する。</li>
+        <li>表示名は参考情報として保存する。本人識別には Discord user ID を使用する。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>9. 月間集計</h2>
+      <p>対象月に重なる終了済み記録を取得し、月範囲との重複時間だけを加算する。</p>
+
+      <pre><code>SELECT
+    id,
+    user_id,
+    display_name,
+    started_at,
+    ended_at,
+    note
+FROM attendance_sessions
+WHERE guild_id = ?
+  AND user_id = ?
+  AND deleted_at IS NULL
+  AND ended_at IS NOT NULL
+  AND started_at &lt; ?
+  AND ended_at &gt; ?
+ORDER BY started_at ASC;</code></pre>
+
+      <p>各記録の月内時間は次の式で求める。</p>
+      <pre><code>effective_start = max(started_at, month_start)
+effective_end   = min(ended_at, month_end)
+duration        = max(effective_end - effective_start, 0)</code></pre>
+    </section>
+
+    <section>
+      <h2>10. 応答の表示方針</h2>
+      <ul>
+        <li>通常の操作結果は原則として ephemeral response とする。</li>
+        <li><code>history</code> と <code>month</code> は Embed を使用する。</li>
+        <li>表示内容は簡潔にし、記録ID、時刻、時間、備考を中心とする。</li>
+        <li>備考がない場合は空の備考欄を表示しない。</li>
+        <li>エラー時も可能な限り現在状態または直近記録を表示する。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>11. 実装上の推奨モジュール分割</h2>
+      <pre><code>src/
+├── main.rs
+├── commands/
+│   ├── mod.rs
+│   ├── start.rs
+│   ├── end.rs
+│   ├── continue_activity.rs
+│   ├── status.rs
+│   ├── history.rs
+│   ├── month.rs
+│   ├── edit.rs
+│   └── delete.rs
+├── attendance/
+│   ├── mod.rs
+│   ├── model.rs
+│   ├── service.rs
+│   └── aggregation.rs
+├── repository/
+│   ├── mod.rs
+│   └── sqlite.rs
+└── presentation/
+    ├── mod.rs
+    ├── embeds.rs
+    └── format.rs</code></pre>
+
+      <p>Discord interaction、domain logic、SQLite 操作、Embed 生成を分離する。月間集計や時間重複計算は Discord に依存しない純粋関数として実装する。</p>
+    </section>
+
+    <section>
+      <h2>12. 初期実装の優先順位</h2>
+      <ol>
+        <li><code>/attendance start</code></li>
+        <li><code>/attendance end</code></li>
+        <li><code>/attendance continue</code></li>
+        <li><code>/attendance status</code></li>
+        <li><code>/attendance history</code></li>
+        <li><code>/attendance month</code></li>
+        <li><code>/attendance edit</code></li>
+        <li><code>/attendance delete</code></li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>13. 対象外</h2>
+      <ul>
+        <li>ランキング機能</li>
+        <li>Google Spreadsheet 同期</li>
+        <li>給与計算</li>
+        <li>管理者承認</li>
+        <li>厳格な監査ログ</li>
+        <li>法令対応を目的とする勤怠管理</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>
