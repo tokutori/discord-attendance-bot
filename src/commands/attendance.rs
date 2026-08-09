@@ -92,7 +92,40 @@ fn confirmation_notice(request: &repository::ConfirmationRequest, details: Strin
     )
 }
 
+async fn take_auto_end_notice(ctx: Context<'_>) -> Result<Option<String>, Error> {
+    let (guild_id, user_id) = ids(ctx)?;
+    let Some(notice) = repository::take_auto_end_notice(
+        &ctx.data().database,
+        guild_id,
+        user_id,
+        Utc::now().timestamp(),
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let message = if notice.corrected_at.is_some() {
+        format!(
+            "前回の終了忘れにより、記録 #{} は {} に自動終了として扱われていた。今回の入力で自動終了を取り消し、ユーザー入力を正として扱った。",
+            notice.session_id,
+            format_datetime(notice.automatic_ended_at)
+        )
+    } else {
+        format!(
+            "前回の終了忘れにより、記録 #{} は {} に自動終了として扱った。実際の終了時刻が異なる場合は `/attendance edit record:{}` で修正してほしい。",
+            notice.session_id,
+            format_datetime(notice.automatic_ended_at),
+            notice.session_id
+        )
+    };
+    Ok(Some(message))
+}
+
 async fn send_response(ctx: Context<'_>, content: impl Into<String>) -> Result<(), Error> {
+    let mut content = content.into();
+    if let Some(notice) = take_auto_end_notice(ctx).await? {
+        content.push_str(&format!("\n\n【自動終了のお知らせ】\n{notice}"));
+    }
     ctx.send(
         CreateReply::default()
             .embed(presentation::response_embed("活動時間記録", content))
@@ -200,6 +233,17 @@ pub async fn end(
     {
         EndOutcome::Ended(s) => format!(
             "活動を終了した。\n開始時刻: {}\n終了時刻: {}\n活動時間: {}\n記録ID: #{}",
+            format_datetime(s.started_at),
+            format_datetime(s.ended_at.unwrap()),
+            format_duration(s.duration_seconds_at(now)),
+            s.id
+        ),
+        EndOutcome::AutoEndedCorrected {
+            session: s,
+            automatic_end,
+        } => format!(
+            "活動を終了した。\n自動終了（{}）を取り消し、入力された終了時刻を正として扱った。\n開始時刻: {}\n終了時刻: {}\n活動時間: {}\n記録ID: #{}",
+            format_datetime(automatic_end),
             format_datetime(s.started_at),
             format_datetime(s.ended_at.unwrap()),
             format_duration(s.duration_seconds_at(now)),
@@ -351,16 +395,16 @@ pub async fn history(
     let (guild_id, user_id) = ids(ctx)?;
     let sessions =
         repository::history(&ctx.data().database, guild_id, user_id, limit.unwrap_or(5)).await?;
-    ctx.send(
-        CreateReply::default()
-            .embed(presentation::history_embed(
-                ctx.author().display_name(),
-                &sessions,
-                Utc::now().timestamp(),
-            ))
-            .ephemeral(true),
-    )
-    .await?;
+    let mut embed = presentation::history_embed(
+        ctx.author().display_name(),
+        &sessions,
+        Utc::now().timestamp(),
+    );
+    if let Some(notice) = take_auto_end_notice(ctx).await? {
+        embed = embed.field("自動終了のお知らせ", notice, false);
+    }
+    ctx.send(CreateReply::default().embed(embed).ephemeral(true))
+        .await?;
     Ok(())
 }
 
@@ -386,15 +430,12 @@ pub async fn month(
         repository::overlapping_completed(&ctx.data().database, guild_id, user_id, start, end)
             .await?;
     let monthly = attendance::aggregate_monthly(&sessions, ym)?;
-    ctx.send(
-        CreateReply::default()
-            .embed(presentation::month_embed(
-                ctx.author().display_name(),
-                &monthly,
-            ))
-            .ephemeral(true),
-    )
-    .await?;
+    let mut embed = presentation::month_embed(ctx.author().display_name(), &monthly);
+    if let Some(notice) = take_auto_end_notice(ctx).await? {
+        embed = embed.field("自動終了のお知らせ", notice, false);
+    }
+    ctx.send(CreateReply::default().embed(embed).ephemeral(true))
+        .await?;
     Ok(())
 }
 
@@ -435,21 +476,19 @@ pub async fn edit(
     if ended_at.is_some_and(|e| e < started_at) {
         return send_response(ctx, "終了時刻は開始時刻以降である必要がある。").await;
     }
-    if ended_at.is_none() {
-        if let Some(open) =
+    if ended_at.is_none()
+        && let Some(open) =
             repository::open_session(&ctx.data().database, guild_id, user_id).await?
-        {
-            if open.id != record {
-                return send_response(
-                    ctx,
-                    format!(
-                        "別の活動記録 #{} が活動中であるため、この記録を活動中には戻せない。",
-                        open.id
-                    ),
-                )
-                .await;
-            }
-        }
+        && open.id != record
+    {
+        return send_response(
+            ctx,
+            format!(
+                "別の活動記録 #{} が活動中であるため、この記録を活動中には戻せない。",
+                open.id
+            ),
+        )
+        .await;
     }
     let new_note = match note.as_deref() {
         Some("") => None,

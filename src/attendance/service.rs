@@ -11,6 +11,10 @@ pub enum StartOutcome {
 #[derive(Debug)]
 pub enum EndOutcome {
     Ended(AttendanceSession),
+    AutoEndedCorrected {
+        session: AttendanceSession,
+        automatic_end: i64,
+    },
     AlreadyInactive(Option<AttendanceSession>),
 }
 #[derive(Debug)]
@@ -80,6 +84,27 @@ pub async fn end(
     now: i64,
 ) -> Result<EndOutcome, ServiceError> {
     let Some(open) = repository::open_session(pool, guild_id, user_id).await? else {
+        if let Some(auto_ended) = repository::latest_auto_ended(pool, guild_id, user_id).await? {
+            if ended_at < auto_ended.session.started_at {
+                return Err(ServiceError::EndBeforeStart);
+            }
+            if let Some(corrected) = repository::correct_auto_ended_session(
+                pool,
+                auto_ended.session.id,
+                guild_id,
+                user_id,
+                ended_at,
+                note,
+                now,
+            )
+            .await?
+            {
+                return Ok(EndOutcome::AutoEndedCorrected {
+                    session: corrected.session,
+                    automatic_end: corrected.automatic_ended_at,
+                });
+            }
+        }
         return Ok(EndOutcome::AlreadyInactive(
             repository::latest_completed(pool, guild_id, user_id).await?,
         ));

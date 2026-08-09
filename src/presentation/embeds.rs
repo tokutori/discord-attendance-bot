@@ -34,7 +34,7 @@ pub fn help_embed(display_name: &str) -> serenity::CreateEmbed {
         .title("活動時間記録 ヘルプ")
         .author(serenity::CreateEmbedAuthor::new(display_name))
         .description(
-            "活動時間を記録・確認・修正するためのコマンド一覧。\n時刻の入力と表示は日本時間。通常の応答は本人にだけ表示される。",
+            "活動時間を記録・確認・修正するためのコマンド一覧。\n時刻の入力と表示は日本時間。通常の応答は本人にだけ表示される。\n月次ファイル出力は `/attendanceexport help` を参照。",
         )
         .field(
             "▶ 日常の操作コマンド",

@@ -128,6 +128,24 @@ pub fn month_bounds(ym: YearMonth) -> anyhow::Result<(i64, i64)> {
     ))
 }
 
+pub fn next_midnight_timestamp(now: DateTime<Utc>) -> anyhow::Result<i64> {
+    let local_date = now.with_timezone(&DISPLAY_TIMEZONE).date_naive();
+    let next_date = local_date
+        .succ_opt()
+        .ok_or_else(|| anyhow::anyhow!("could not calculate next local date"))?;
+    local_to_timestamp(next_date.and_hms_opt(0, 0, 0).unwrap()).map_err(Into::into)
+}
+
+pub fn auto_end_timestamp(started_at: i64, now: DateTime<Utc>) -> Option<i64> {
+    let started = DateTime::<Utc>::from_timestamp(started_at, 0)?.with_timezone(&DISPLAY_TIMEZONE);
+    let local_now = now.with_timezone(&DISPLAY_TIMEZONE);
+    if started.date_naive() >= local_now.date_naive() {
+        return None;
+    }
+    let cutoff = local_to_timestamp(started.date_naive().and_hms_opt(21, 0, 0).unwrap()).ok()?;
+    (cutoff >= started_at && cutoff <= now.timestamp()).then_some(cutoff)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,5 +169,26 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 8, 6, 10, 0, 0).unwrap();
         let ts = parse_today_time("13:30", now).unwrap();
         assert_eq!(format_datetime(ts), "2026年8月6日 13:30");
+    }
+
+    #[test]
+    fn calculates_previous_day_auto_end_at_21() {
+        let started = Tokyo
+            .with_ymd_and_hms(2026, 8, 8, 18, 0, 0)
+            .unwrap()
+            .with_timezone(&Utc);
+        let after_midnight = Tokyo
+            .with_ymd_and_hms(2026, 8, 9, 0, 0, 1)
+            .unwrap()
+            .with_timezone(&Utc);
+        let expected = Tokyo
+            .with_ymd_and_hms(2026, 8, 8, 21, 0, 0)
+            .unwrap()
+            .timestamp();
+        assert_eq!(
+            auto_end_timestamp(started.timestamp(), after_midnight),
+            Some(expected)
+        );
+        assert_eq!(auto_end_timestamp(started.timestamp(), started), None);
     }
 }

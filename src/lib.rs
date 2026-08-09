@@ -1,4 +1,5 @@
 pub mod attendance;
+pub mod attendance_export;
 pub mod channel_status;
 pub mod commands;
 pub mod config;

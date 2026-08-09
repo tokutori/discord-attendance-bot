@@ -13,6 +13,20 @@ use crate::{
 
 const TOPIC_REFRESH_INTERVAL: Duration = Duration::from_secs(600);
 
+pub async fn apply_due_auto_ends(pool: &SqlitePool, guild_id: i64) -> anyhow::Result<usize> {
+    let now = Utc::now().timestamp();
+    let notices = repository::apply_due_auto_ends(pool, guild_id, now).await?;
+    for notice in &notices {
+        tracing::info!(
+            guild_id,
+            session_id = notice.session_id,
+            automatic_ended_at = notice.automatic_ended_at,
+            "applied automatic attendance end"
+        );
+    }
+    Ok(notices.len())
+}
+
 async fn load_active_sessions(
     pool: &SqlitePool,
     guild_id: i64,
@@ -101,6 +115,39 @@ pub fn spawn_periodic_refresh(
                         channel_id,
                         "failed periodic attendance status refresh"
                     );
+                }
+            }
+        }
+    });
+}
+
+pub fn spawn_auto_end_scheduler(ctx: &serenity::Context, pool: SqlitePool, guild_id: i64) {
+    let ctx = ctx.clone();
+    tokio::spawn(async move {
+        loop {
+            let now = Utc::now();
+            let seconds_until_midnight = match crate::time::next_midnight_timestamp(now) {
+                Ok(next_midnight) => (next_midnight - now.timestamp()).max(1) as u64,
+                Err(error) => {
+                    tracing::error!(%error, "failed to calculate next auto-end time");
+                    60
+                }
+            };
+            tokio::time::sleep(Duration::from_secs(seconds_until_midnight)).await;
+            match apply_due_auto_ends(&pool, guild_id).await {
+                Ok(count) if count > 0 => {
+                    tracing::info!(
+                        guild_id,
+                        count,
+                        "completed midnight automatic attendance end"
+                    );
+                    if let Err(error) = refresh_activity(&ctx, &pool, guild_id).await {
+                        tracing::warn!(%error, guild_id, "failed to refresh activity after automatic end");
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::error!(%error, guild_id, "failed midnight automatic attendance end");
                 }
             }
         }

@@ -6,6 +6,57 @@ use poise::serenity_prelude as serenity;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use tracing::info;
 
+fn explain_command_error(error: &anyhow::Error) -> (&'static str, String) {
+    let message = error.to_string();
+    let lowercase = message.to_ascii_lowercase();
+    if message.contains("年月は") || message.contains("月は1から12") {
+        return (
+            "入力形式エラー",
+            format!("原因: {message}\n対象月は `YYYY-MM` 形式で指定してほしい。例: `2026-08`。"),
+        );
+    }
+    if message.contains("時刻は") || message.contains("日時は") {
+        return (
+            "入力形式エラー",
+            format!("原因: {message}\nコマンドのヘルプに記載された形式で入力してほしい。"),
+        );
+    }
+    if lowercase.contains("request entity too large") || lowercase.contains("payload too large") {
+        return (
+            "添付ファイルが大きすぎる",
+            "原因: Discord が CSV または PDF の添付をサイズ超過として受け付けなかった。`preview` と `publish` では添付サイズは変わらない。\n対処: 管理者は `ATTENDANCE_PDF_FONT_PATH` に軽量な日本語 TTF またはサブセット済みフォントを指定してほしい。改善しない場合は対象月の人数・記録数による制限の可能性がある。".into(),
+        );
+    }
+    if message.contains("PDF") || message.contains("フォント") {
+        return (
+            "PDF生成設定エラー",
+            format!(
+                "原因: {message}\n日本語 TTF フォントを `ATTENDANCE_PDF_FONT_PATH` に指定して再試行してほしい。"
+            ),
+        );
+    }
+    if lowercase.contains("database") || lowercase.contains("sqlite") || lowercase.contains("sqlx")
+    {
+        return (
+            "データベースエラー",
+            "原因: 活動記録データベースの読み書きに失敗した。時間を置いて再試行してほしい。繰り返す場合は管理者に連絡してほしい。".into(),
+        );
+    }
+    if lowercase.contains("discord")
+        || lowercase.contains("http")
+        || lowercase.contains("connection")
+    {
+        return (
+            "Discord通信エラー",
+            "原因: Discord との通信に失敗した。時間を置いて再試行してほしい。".into(),
+        );
+    }
+    (
+        "処理に失敗した",
+        "原因: 内部処理で想定外のエラーが発生した。時間を置いて再試行してほしい。繰り返す場合は管理者に連絡してほしい。".into(),
+    )
+}
+
 async fn handle_error(
     error: poise::FrameworkError<'_, Data, anyhow::Error>,
 ) -> Result<(), serenity::Error> {
@@ -14,12 +65,10 @@ async fn handle_error(
     match error {
         FrameworkError::Command { ctx, error, .. } => {
             tracing::error!(%error, "attendance command failed");
+            let (title, description) = explain_command_error(&error);
             ctx.send(
                 poise::CreateReply::default()
-                    .embed(presentation::error_embed(
-                        "処理に失敗した",
-                        "処理中にエラーが発生した。時間を置いて再試行してほしい。",
-                    ))
+                    .embed(presentation::error_embed(title, description))
                     .ephemeral(true),
             )
             .await?;
@@ -179,7 +228,7 @@ async fn main() -> anyhow::Result<()> {
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![commands::attendance()],
+            commands: vec![commands::attendance(), commands::attendanceexport()],
             on_error: |error| {
                 Box::pin(async move {
                     if let Err(error) = handle_error(error).await {
@@ -206,6 +255,20 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .await?;
                 info!(mode = mode.as_str(), guild_id, "registered guild commands");
+                match channel_status::apply_due_auto_ends(&database, guild_id as i64).await {
+                    Ok(count) if count > 0 => {
+                        info!(guild_id, count, "applied missed automatic attendance ends");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::error!(%error, guild_id, "failed to apply missed automatic attendance ends");
+                    }
+                }
+                channel_status::spawn_auto_end_scheduler(
+                    ctx,
+                    database.clone(),
+                    guild_id as i64,
+                );
                 channel_status::spawn_periodic_refresh(
                     ctx,
                     database.clone(),

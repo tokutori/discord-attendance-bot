@@ -219,6 +219,16 @@
             <td><code>id</code></td>
             <td><code>edit</code>、<code>delete</code>、<code>revert</code> の確認要求を確定する。</td>
           </tr>
+          <tr>
+            <td><code>/attendanceexport help</code></td>
+            <td>なし</td>
+            <td>月次ファイル出力の操作方法と出力形式を表示する。</td>
+          </tr>
+          <tr>
+            <td><code>/attendanceexport export</code></td>
+            <td><code>month</code>、<code>mode</code></td>
+            <td>指定月の CSV と PDF を preview または publish で出力する。</td>
+          </tr>
         </tbody>
       </table>
     </section>
@@ -353,6 +363,9 @@
 2026年8月6日 13:30 ～ 18:00
 活動時間: 4時間30分
 記録ID: #128</code></pre>
+      <h4>自動終了後の入力</h4>
+      <p>Bot は日本時間の翌日 0:00 に、前日 21:00 まで活動中だった記録を前日 21:00 終了として自動終了する。Bot が停止していた場合は次回起動時に未処理分を補完する。</p>
+      <p>自動終了後にユーザーが <code>end</code> を実行した場合は、自動終了を取り消してユーザーが入力した終了時刻を正とする。次のユーザー操作時には、自動終了した記録と修正方法を通知する。</p>
 
       <h3>5.4 <code>/attendance continue</code></h3>
       <p>直前の <code>/attendance end</code> を取り消す。新しい記録は作らず、直近の終了済み記録の <code>ended_at</code> を <code>NULL</code> に戻す。</p>
@@ -512,6 +525,14 @@ Bem130
           <tr><td><code>id</code></td><td>必須</td><td><code>AB3KQ</code></td><td>プレビュー時に発行された確認ID。</td></tr>
         </tbody>
       </table>
+
+      <h3>5.11 <code>/attendanceexport help</code> / <code>/attendanceexport export</code></h3>
+      <p><code>/attendanceexport help</code> は月次ファイル出力の使い方を Embed で表示する。</p>
+      <p><code>/attendanceexport export</code> は <code>month</code> を必須とし、<code>YYYY-MM</code> 形式の指定月について CSV と PDF を同時に生成する。<code>mode</code> は <code>preview</code> または <code>publish</code> で、既定値は <code>preview</code> とする。<code>preview</code> は実行者だけに表示し、<code>publish</code> はサーバー全員に見えるメッセージとして送信する。</p>
+      <h4>表の構造</h4>
+      <p>表の縦方向は対象月に記録があるユーザー、横方向は対象月の日数にユーザー名列と合計列を加えたものとする。活動時間があるセルは <code>時間:分</code> 形式で表示する。PDFの活動時間0セルは空欄、CSVの活動時間0セルは <code>0:00</code> とする。活動中の記録は出力時点までを暫定値として含める。</p>
+      <h4>注記</h4>
+      <p>指定月がまだ終了していない場合は、暫定集計であることを応答と PDF に記載する。指定月の翌月1日に出力した場合は、ユーザーが修正する可能性があるため確定版ではないことを応答と PDF に記載する。</p>
     </section>
 
     <section>
@@ -561,7 +582,9 @@ ON attendance_sessions (
     started_at DESC
 )
 WHERE deleted_at IS NULL;</code></pre>
-      <p><code>revert</code> 用に <code>attendance_operations</code> テーブルも使用する。各成功した変更操作について、guild・user・対象記録・操作種別・操作前後の開始時刻・終了時刻・備考・削除時刻を保存し、<code>reverted_at</code> で取り消し済みかを管理する。取り消し処理は最新の未取り消し操作を対象とし、現在状態が保存済みの操作後状態と一致しない場合は安全のため実行しない。</p>
+    <p><code>revert</code> 用に <code>attendance_operations</code> テーブルも使用する。各成功した変更操作について、guild・user・対象記録・操作種別・操作前後の開始時刻・終了時刻・備考・削除時刻を保存し、<code>reverted_at</code> で取り消し済みかを管理する。取り消し処理は最新の未取り消し操作を対象とし、現在状態が保存済みの操作後状態と一致しない場合は安全のため実行しない。</p>
+      <p><code>edit</code>、<code>delete</code>、<code>revert</code> の確認要求は <code>attendance_confirmations</code> に保存する。確認IDは5文字で発行から5分間有効、要求者の guild・user に限定し、確定後または状態不一致時は再利用できない。</p>
+      <p>自動終了の対象と通知状態は <code>attendance_auto_ends</code> に保存する。自動終了時刻、適用時刻、通知済み時刻、ユーザー入力による訂正時刻を記録し、同じ自動終了を二重適用しない。</p>
     </section>
 
     <section>
@@ -570,6 +593,8 @@ WHERE deleted_at IS NULL;</code></pre>
         <li>未終了記録は、同一 guild・同一 user につき最大1件とする。</li>
         <li>重複 <code>start</code> と重複 <code>end</code> はエラー終了させず、no-op として現在状態を表示する。</li>
         <li><code>continue</code> は新しい記録を作らず、直近終了記録を再び未終了状態へ戻す。</li>
+        <li>自動終了は日本時間の毎日0時に実行し、前日21時終了として扱う。Bot停止中の未処理分は次回起動時に補完する。</li>
+        <li>自動終了後のユーザー <code>end</code> は自動終了を取り消し、ユーザー入力を正として保存する。</li>
         <li>編集・削除時は、SQL 条件に <code>guild_id</code> と <code>user_id</code> を含める。</li>
         <li>削除済み記録は通常の検索・集計から除外する。</li>
         <li>表示名は参考情報として保存する。本人識別には Discord user ID を使用する。</li>
@@ -601,6 +626,10 @@ ORDER BY started_at ASC;</code></pre>
       <pre><code>effective_start = max(started_at, month_start)
 effective_end   = min(ended_at, month_end)
 duration        = max(effective_end - effective_start, 0)</code></pre>
+      <h3>9.1 月次ファイル出力</h3>
+      <p><code>/attendanceexport export</code> は同じ月内重複計算をユーザー別・日別に展開し、CSV と PDF にする。出力表はユーザー行、日付列、合計列で構成する。</p>
+      <p>PDF 生成には <a href="https://docs.rs/printpdf/latest/printpdf/">printpdf</a> を採用する。表の配置・改ページ・文字レイアウトは Bot 側で明示的に制御し、保存時に <code>PdfSaveOptions.subset_fonts = true</code> を指定する。これにより、PDF に現れる文字のグリフだけを TTF から埋め込み、CJK フォント全体の埋め込みによる添付サイズ増大を避ける。日本語フォントは環境依存のため、<code>ATTENDANCE_PDF_FONT_PATH</code> で TTF を指定できる。</p>
+      <p><a href="https://docs.rs/genpdf/latest/genpdf/">genpdf</a> は <a href="https://docs.rs/genpdf/latest/genpdf/elements/">TableLayout</a> など高レベル API が便利だが、今回の使用文字だけのサブセット埋め込みを明示的に保証しにくいため採用しない。<a href="https://docs.rs/lopdf/latest/lopdf/">lopdf</a> / <a href="https://docs.rs/lopdf-table/latest/lopdf_table/">lopdf-table</a> は PDF 構造や表の細かな後処理が必要になった場合の候補とする。</p>
     </section>
 
     <section>
@@ -609,6 +638,8 @@ duration        = max(effective_end - effective_start, 0)</code></pre>
         <li>通常の操作結果は原則として ephemeral response とする。</li>
         <li>Slash Command の利用者向け応答は、成功結果・想定内の入力エラー・権限エラーを含め、原則として本人だけが見られる ephemeral Embed を使用する。</li>
         <li><code>history</code>、<code>month</code>、<code>help</code> は専用レイアウトの Embed を使用する。</li>
+        <li><code>/attendanceexport export</code> は <code>preview</code> では ephemeral、<code>publish</code> では公開メッセージとして CSV と PDF を添付する。</li>
+        <li>コマンドエラーは入力形式、PDFフォント、添付サイズ、データベース、Discord通信などの種別に分類し、原因と対処を Embed で説明する。秘密情報や認証情報は表示しない。</li>
         <li><code>revert</code> は直前の成功した変更操作を1件取り消し、操作内容と対象記録を Embed で説明する。<code>revert</code> 自体は履歴に積まれないため、連続実行では過去の変更を順に取り消せる。</li>
         <li>表示内容は簡潔にし、記録ID、時刻、時間、備考を中心とする。</li>
         <li>備考がない場合は空の備考欄を表示しない。</li>
@@ -623,7 +654,8 @@ duration        = max(effective_end - effective_start, 0)</code></pre>
 ├── main.rs
 ├── commands/
 │   ├── mod.rs
-│   └── attendance.rs
+│   ├── attendance.rs
+│   └── attendance_export.rs
 ├── attendance/
 │   ├── mod.rs
 │   ├── model.rs

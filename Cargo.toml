@@ -2,7 +2,7 @@
 name = "discord-attendance-bot"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Discord bot for recording birdman team activity time"
 license = "MIT"
 
@@ -12,6 +12,7 @@ chrono = { version = "0.4", features = ["clock"] }
 chrono-tz = "0.10"
 dotenvy = "0.15"
 poise = "0.6.1"
+printpdf = "=0.11.3"
 serde = { version = "1.0", features = ["derive"] }
 sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
 thiserror = "2.0"

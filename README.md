@@ -15,12 +15,14 @@
 - `/attendance delete record`
 - `/attendance confirm id`
 - `/attendance help`
+- `/attendanceexport export month [mode]`
+- `/attendanceexport help`
 
 `at` は `HH:MM`、`target` は `YYYY-MM`、編集日時は `YYYY-MM-DD HH:MM` 形式で入力する。時刻入力と表示は日本時間、SQLite 内部では UTC Unix timestamp を使用する。
 
 ## 必要環境
 
-- Rust 1.85 以上
+- Rust 1.88 以上
 - Discord Application / Bot token
 - Bot を追加できる Discord サーバー
 
@@ -49,6 +51,8 @@ DATABASE_URL_TEST=sqlite://attendance-test.db
 DATABASE_URL_RELEASE=sqlite://attendance-release.db
 ATTENDANCE_STATUS_CHANNEL_ID_TEST=...
 ATTENDANCE_STATUS_CHANNEL_ID_RELEASE=...
+# 任意: PDF用日本語TTFフォントのパス
+# ATTENDANCE_PDF_FONT_PATH=C:\\Windows\\Fonts\\NotoSansJP-VF.ttf
 RUST_LOG=discord_attendance_bot=info,poise=info,serenity=info
 ```
 
@@ -75,6 +79,8 @@ cargo run --release -- release
 初回起動時に、選択したモードのSQLite databaseとmigration tableが自動作成される。
 
 BotのActivityは活動記録の変更時に即時更新する。専用チャンネルのTopicはBot起動時および10分ごとに更新し、その周期更新時にはActivityも同時に更新する。
+
+Botは日本時間の毎日0時に、前日21時まで活動中だった記録を21時終了として自動終了する。Botが0時に停止していた場合は、次回起動時に未処理分を補完する。自動終了後にユーザーが `end` を実行した場合は、自動終了を取り消してユーザー入力の終了時刻を正とする。次のユーザー操作時には自動終了の内容と、必要なら `edit` で修正できることを通知する。
 
 Activityの種別は、Botが活動状況を監視している意味に合わせて `Watching` を使用する。
 
@@ -119,6 +125,16 @@ VACUUM INTO 'attendance-backup.db';
 - `delete` は confirm で確定し、DB上では soft delete する。
 - `/attendance help` で利用可能なコマンドと引数を確認できる。
 - 月次集計は月境界および日境界で分割し、日本時間基準で算出する。
+- `/attendanceexport export month:YYYY-MM` で指定月の CSV と PDF を出力できる。`month` は必須で、`mode` は `preview`（既定、本人のみ）または `publish`（全員に公開）を指定する。
+- エクスポート表は、縦方向がユーザー、横方向が対象月の日付と合計列である。対象月が未終了の場合と翌月1日の出力には、暫定集計・修正可能性の注記を付ける。
+
+## 月次ファイル出力
+
+`/attendanceexport help` で操作方法を確認できる。CSV と PDF は同じ月次データから生成し、活動時間があるセルは `時間:分` 形式で表示する。PDFの0時間セルは空欄、CSVの0時間セルは `0:00` と表示する。現在活動中の記録は出力時点までを暫定値として含める。
+
+PDF は `printpdf` を使用する。表の配置と改ページは Bot 側で明示的に制御し、`PdfSaveOptions.subset_fonts = true` を必ず指定して、実際に使用した文字のグリフだけを TTF から埋め込む。CJK フォント全体を埋め込むと添付サイズが大きくなりやすいため、この方針を採用した。日本語フォントは環境依存のため、`ATTENDANCE_PDF_FONT_PATH` で TTF を指定できる。未指定時は Noto Sans JP、Windows の日本語フォントなど既定候補を検索する。
+
+`genpdf` は高レベルな表 API が便利だが、フォントを複数登録する設計では使用文字だけの埋め込みを明示しにくいため採用しない。`lopdf` / `lopdf-table` は PDF 構造や表の細かな後処理が必要になった場合の候補とする。
 
 ## ディレクトリ
 
