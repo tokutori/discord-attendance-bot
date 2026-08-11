@@ -1,0 +1,5 @@
+[advisories]
+# sqlx-mysql is present only as lockfile metadata from sqlx's optional drivers. This project
+# enables only sqlx/sqlite, and `cargo tree --target all --edges all -i rsa@0.9.10` confirms
+# that the vulnerable RSA crate is not part of any build graph.
+ignore = ["RUSTSEC-2023-0071"]
