@@ -5,10 +5,13 @@
 ## 実装済みコマンド
 
 - `/attendance start [at] [note]`
+- `/join [at] [note]`（`/attendance start` の短縮名）
 - `/attendance end [at] [note]`
+- `/exit [at] [note]`（`/attendance end` の短縮名）
 - `/attendance continue`
 - `/attendance revert`
 - `/attendance status`
+- `/attendance list`
 - `/attendance history [limit]`
 - `/attendance month [target]`
 - `/attendance edit record [start] [end] [note]`
@@ -16,7 +19,7 @@
 - `/attendance confirm id`
 - `/attendance help`
 - `/attendanceexport export month [mode]`
-- `/attendanceexport userconfig [generation] [real_name] [role]`
+- `/attendanceexport userconfig [generation] [real_name] [role] [name_reading]`
 - `/attendanceexport help`
 
 `at` は `HH:MM`、`target` は `YYYY-MM`、編集日時は `YYYY-MM-DD HH:MM` 形式で入力する。時刻入力と表示は日本時間、SQLite 内部では UTC Unix timestamp を使用する。`end at:` は現在から見て最も近い過去の同時刻として解釈するため、日付が変わった直後に前夜の終了時刻を入力できる。未来時刻になる `start`・`edit` は拒否する。
@@ -81,6 +84,8 @@ cargo run --release -- release
 
 v1.0では本番運用前の設計見直しに伴いmigration履歴とDB schemaを作り直している。v0.0で作成したテストDBとの移行互換性はないため、v1.0を初めて起動する前にBotを停止し、旧テストDBと対応する `-wal`・`-shm` を削除して新規作成する。本番DBの移行手順としてこの方法を使用してはならない。
 
+`name_reading` を含む現在のschemaも実運用開始前の初期schemaとして `0001_initial_schema.sql` に反映している。以前のテストDBはBot停止中に対応する `-wal`・`-shm` とともに削除し、作り直す。
+
 BotのActivityは活動記録の変更時に即時更新する。専用チャンネルのTopicはBot起動時および10分ごとに更新し、その周期更新時にはActivityも同時に更新する。
 
 Botは日本時間の毎日0時に、前日21時まで活動中だった記録を21時終了として自動終了する。21時以降に開始または `continue` した記録は、直後に過去時刻へ終了させず、次の日の21時を自動終了候補とする。Botが0時に停止していた場合は、次回起動時に未処理分を補完する。同じ記録を `continue` した後に再び終了を忘れた場合も、自動終了イベントを別に記録して安全に処理する。
@@ -90,6 +95,10 @@ Botは日本時間の毎日0時に、前日21時まで活動中だった記録�
 Activityの種別は、Botが活動状況を監視している意味に合わせて `Watching` を使用する。
 
 Slash Command の操作結果・入力エラー・権限エラーなど、利用者向けの応答は原則として ephemeral Embed で表示する。`history`、`month`、`help` は専用の Embed レイアウトを使用する。
+
+`/attendance list` は現在活動中のメンバーを、役割、代（昇順）、名前の読み（五十音順）の階層で表示し、本名とDiscord表示名を併記する。Embed内は `# 役割`、`## 代`、`- 本名（Discord表示名）` のMarkdown階層とし、長い名簿は見出しを保ったまま複数のephemeral Embedへ分割する。`name_reading` はひらがな・カタカナで設定でき、保存時にひらがなへ正規化する。役割や代が未設定のグループ、およびユーザー設定がないメンバーは末尾に表示する。名前は人物の識別子にせず、同一人物の判定にはDiscord user IDを使用する。本名とDiscord表示名には文字種を仮定しない。
+
+月次exportは、Discord表示名あり版と本名のみ版についてCSV・PDFを各1つ、合計4ファイル生成する。全ファイルは `/attendance list` と共通の比較処理を使い、役割、代（昇順）、名前の読み（五十音順）で並べる。本名のみ版では本名未設定者を「未設定」と表示し、Discord表示名で補完しない。
 
 ```text
 :green_circle: 現在2名活動中
@@ -118,7 +127,7 @@ v1.0の初期schemaは `migrations/0001_initial_schema.sql` に集約し、次�
 - `attendance_changes`: 取り消し可能な変更履歴
 - `pending_attendance_actions`: `edit`、`delete`、`revert` の確認要求
 - `attendance_auto_end_events`: 21時自動終了と通知・訂正状態
-- `attendance_user_profiles`: 代、本名、役割の出力設定
+- `attendance_user_profiles`: 代、本名、役割、名簿用の名前の読みの設定
 
 バックアップは Bot 停止中に、起動モードが選択した `DATABASE_URL_TEST` または `DATABASE_URL_RELEASE` のDBファイルをコピーするのが簡単である。稼働中に取得する場合は SQLite CLI の `.backup` または `VACUUM INTO` を使用する。
 
@@ -141,13 +150,13 @@ VACUUM INTO 'attendance-backup.db';
 - `/attendance help` で利用可能なコマンドと引数を確認できる。
 - 月次集計は月境界および日境界で分割し、日本時間基準で算出する。
 - `/attendance month` は合計・活動回数・1回あたり平均に加え、1日あたり平均と1週間あたり平均を表示する。当月は今日を含む経過暦日数、過去月はその月の全日数を分母とし、未来月は分母0として平均0を表示する。活動日のみの日数ではない。
-- `/attendanceexport export month:YYYY-MM` で指定月の CSV と PDF を出力できる。`month` は必須で、`mode` は `preview`（既定、本人のみ）または `publish`（全員に公開）を指定する。全メンバーの本名を含み得るため実行者にはDiscordの「サーバー管理」権限が必要で、Botにはメッセージ送信・Embed・ファイル添付権限が必要である。
+- `/attendanceexport export month:YYYY-MM` で指定月のDiscord表示名あり版・本名のみ版の CSV と PDF（計4ファイル）を出力できる。`month` は必須で、`mode` は `preview`（既定、本人のみ）または `publish`（全員に公開）を指定する。全メンバーの本名を含み得るため実行者にはDiscordの「サーバー管理」権限が必要で、Botにはメッセージ送信・Embed・ファイル添付権限が必要である。
 - `/attendanceexport userconfig` は実行者の代（整数）、本名、役割を設定する。引数なしでは現在値をEmbed表示し、一部の引数だけを指定した場合はほかの設定を保持する。
-- エクスポート表は、縦方向がユーザー、横方向が対象月の日付と合計列である。CSVには代・本名・役割・Discord表示名を独立した列として含め、PDFには設定内容をユーザー情報欄へまとめて表示する。本名未設定時はDiscord表示名を使用する。対象月が未終了の場合と翌月1日の出力には、暫定集計・修正可能性の注記を付ける。
+- エクスポート表は、縦方向がユーザー、横方向が対象月の日付と合計列である。Discord表示名あり版のCSVには代・本名・役割・Discord表示名を独立した列として含め、PDFには設定内容をユーザー情報欄へまとめて表示する。本名のみ版にはDiscord表示名を含めない。対象月が未終了の場合と翌月1日の出力には、暫定集計・修正可能性の注記を付ける。
 
 ## 月次ファイル出力
 
-`/attendanceexport help` で操作方法を確認できる。CSV と PDF は同じ月次データから生成し、活動時間があるセルは `時間:分` 形式で表示する。PDFの0時間セルは空欄、CSVの0時間セルは `0:00` と表示する。CSVのユーザー入力列は、表計算ソフトで数式として解釈される危険な先頭文字を無害化してからCSV構文としてescapeする。現在活動中の記録は出力時点までを暫定値として含める。PDFのセル文字は上下中央揃えとし、長い代・本名・役割は省略せず折り返しと文字サイズ調整を行い、月の日数と利用者数に応じて改ページする。
+`/attendanceexport help` で操作方法を確認できる。4ファイルは同じ月次データから生成し、活動時間があるセルは `時間:分` 形式で表示する。PDFの0時間セルは空欄、CSVの0時間セルは `0:00` と表示する。CSVのユーザー入力列は、表計算ソフトで数式として解釈される危険な先頭文字を無害化してからCSV構文としてescapeする。現在活動中の記録は出力時点までを暫定値として含める。PDFのセル文字は上下中央揃えとし、長い代・本名・役割・Discord表示名は省略せず折り返しと文字サイズ調整を行い、月の日数と利用者数に応じて改ページする。
 
 Discord interactionから得た添付上限を生成後・送信前に検査する。`publish` でも処理開始・成功確認・エラーは本人だけに表示し、CSV・PDFの生成に成功した場合だけ別の公開メッセージを送る。一度公開したDiscordメッセージをBotが自動的に取り消す機能ではない。
 

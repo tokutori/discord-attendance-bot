@@ -2,7 +2,7 @@ use poise::serenity_prelude as serenity;
 
 use crate::{
     attendance::{AttendanceSession, MonthlyAttendance},
-    repository::{AutoEndNotice, UserProfile},
+    repository::{ActiveAttendanceMember, AutoEndNotice, UserProfile},
     time::{format_duration, format_history_range},
 };
 
@@ -52,15 +52,15 @@ pub fn auto_end_notice_text(notice: &AutoEndNotice) -> String {
 pub fn export_help_embed() -> serenity::CreateEmbed {
     serenity::CreateEmbed::new()
         .title("活動時間エクスポート ヘルプ")
-        .description("月単位の活動時間を CSV と PDF で出力する。month は必須。通常は preview で本人だけに送信する。")
+        .description("月単位の活動時間を、Discord表示名あり・本名のみのCSV/PDF（計4ファイル）で出力する。month は必須。通常は preview で本人だけに送信する。")
         .field(
             "使い方",
-            "`/attendanceexport export month:YYYY-MM [mode:preview|publish]`\n月次帳票を出力する。\n\n`/attendanceexport userconfig [generation] [real_name] [role]`\n代・本名・役割を設定する。全項目を省略すると現在値を表示する。\n\n`/attendanceexport help`\nこのヘルプを表示する。",
+            "`/attendanceexport export month:YYYY-MM [mode:preview|publish]`\n月次帳票を出力する。\n\n`/attendanceexport userconfig [generation] [real_name] [role] [name_reading]`\n代・本名・役割と名簿用の読みを設定する。全項目を省略すると現在値を表示する。\n\n`/attendanceexport help`\nこのヘルプを表示する。",
             false,
         )
         .field(
             "出力内容",
-            "ユーザー設定の代・本名・役割をCSVの列とPDFのユーザー情報へ反映する。未設定の本名はDiscord表示名を使用する。活動時間があるセルは `時間:分` 形式。PDFの0時間セルは空欄、CSVの0時間セルは `0:00` と表示する。",
+            "4ファイルとも活動中名簿と同じく、役割 → 代 → 名前の読み順に並べる。Discord表示名あり版は本名未設定時にDiscord表示名を使用し、本名のみ版は「未設定」と表示する。活動時間があるセルは `時間:分` 形式。PDFの0時間セルは空欄、CSVの0時間セルは `0:00` と表示する。",
             false,
         )
         .field(
@@ -95,16 +95,109 @@ pub fn user_profile_embed(profile: Option<&UserProfile>, updated: bool) -> seren
     let role = profile
         .and_then(|value| value.role.as_deref())
         .unwrap_or("未設定");
+    let name_reading = profile
+        .and_then(|value| value.name_reading.as_deref())
+        .unwrap_or("未設定");
     serenity::CreateEmbed::new()
         .title(title)
-        .description("この設定は月次CSV・PDFのユーザー情報に使用する。")
+        .description("この設定は月次CSV・PDFと活動中名簿のユーザー情報に使用する。")
         .field("代", generation, true)
         .field("本名", real_name, true)
         .field("役割", role, true)
+        .field("名前の読み", name_reading, true)
         .footer(serenity::CreateEmbedFooter::new(
             "未指定の項目は既存値を維持する",
         ))
         .color(DEFAULT_COLOR)
+}
+
+pub fn active_roster_embeds(members: &[ActiveAttendanceMember]) -> Vec<serenity::CreateEmbed> {
+    if members.is_empty() {
+        return vec![response_embed(
+            "現在活動中の名簿",
+            "現在、活動中のメンバーはいない。",
+        )];
+    }
+
+    const ROSTER_PAGE_CHARS: usize = 3_900;
+    let mut pages = Vec::new();
+    let mut body = String::new();
+    let mut previous_role: Option<&str> = None;
+    let mut previous_generation: Option<Option<i64>> = None;
+    for member in members {
+        let role_source = member.role.as_deref().unwrap_or("未設定");
+        let role = escape_roster_markdown(role_source);
+        let generation = member
+            .generation
+            .map(|value| format!("{value}代"))
+            .unwrap_or_else(|| "代未設定".into());
+        let name = escape_roster_markdown(member.real_name.as_deref().unwrap_or("名前未設定"));
+        let display_name = escape_roster_markdown(&member.display_name);
+        let role_changed = previous_role != Some(role_source);
+        let generation_changed = role_changed || previous_generation != Some(member.generation);
+        let mut block = String::new();
+        if role_changed {
+            if !body.is_empty() {
+                block.push('\n');
+            }
+            block.push_str(&format!("# {role}\n"));
+        }
+        if generation_changed {
+            block.push_str(&format!("## {generation}\n"));
+        }
+        block.push_str(&format!("- {name}（{display_name}）\n"));
+
+        if !body.is_empty() && body.chars().count() + block.chars().count() > ROSTER_PAGE_CHARS {
+            pages.push(std::mem::take(&mut body));
+            block = format!("# {role}\n## {generation}\n- {name}（{display_name}）\n");
+        }
+        body.push_str(&block);
+        previous_role = Some(role_source);
+        previous_generation = Some(member.generation);
+    }
+    if !body.is_empty() {
+        pages.push(body);
+    }
+
+    let page_count = pages.len();
+    pages
+        .into_iter()
+        .enumerate()
+        .map(|(index, page)| {
+            let title = if page_count == 1 {
+                "現在活動中の名簿".into()
+            } else {
+                format!("現在活動中の名簿 ({}/{page_count})", index + 1)
+            };
+            serenity::CreateEmbed::new()
+                .title(title)
+                .description(page)
+                .footer(serenity::CreateEmbedFooter::new(format!(
+                    "活動中: {}名 / 役割 → 代 → 名前の読み順",
+                    members.len()
+                )))
+                .color(DEFAULT_COLOR)
+        })
+        .collect()
+}
+
+fn escape_roster_markdown(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .flat_map(|character| {
+            if matches!(
+                character,
+                '\\' | '*' | '_' | '~' | '`' | '|' | '>' | '#' | '-' | '[' | ']'
+            ) {
+                vec!['\\', character]
+            } else {
+                vec![character]
+            }
+        })
+        .collect()
 }
 
 pub fn help_embed(display_name: &str) -> serenity::CreateEmbed {
@@ -116,7 +209,7 @@ pub fn help_embed(display_name: &str) -> serenity::CreateEmbed {
         )
         .field(
             "▶ 日常の操作コマンド",
-            "`/attendance start [at] [note]`\n活動を開始する。`at` は `HH:MM`（省略時は現在時刻）。\n\n`/attendance end [at] [note]`\n活動を終了する。\n\n`/attendance continue`\n直近の終了済み記録を活動中へ戻す。",
+            "`/attendance start [at] [note]` / `/join [at] [note]`\n活動を開始する。`at` は `HH:MM`（省略時は現在時刻）。\n\n`/attendance end [at] [note]` / `/exit [at] [note]`\n活動を終了する。\n\n`/attendance continue`\n直近の終了済み記録を活動中へ戻す。",
             false,
         )
         .field(
@@ -126,7 +219,7 @@ pub fn help_embed(display_name: &str) -> serenity::CreateEmbed {
         )
         .field(
             "🔎 閲覧・集計コマンド",
-            "`/attendance status`\n現在活動中か確認する。\n\n`/attendance history [limit]`\n最近の記録を表示する（1〜20件、既定5件）。\n\n`/attendance month [target]`\n合計・活動回数・1回/1日/1週間あたり平均・日別集計を表示する。`target` は `YYYY-MM`（省略時は当月）。日・週平均は当月なら今日を含む経過暦日、過去月なら全日数を基準にする。",
+            "`/attendance status`\n現在活動中か確認する。\n\n`/attendance list`\n活動中の全員を役割・代・名前の読み順で表示する。\n\n`/attendance history [limit]`\n最近の記録を表示する（1〜20件、既定5件）。\n\n`/attendance month [target]`\n合計・活動回数・1回/1日/1週間あたり平均・日別集計を表示する。`target` は `YYYY-MM`（省略時は当月）。日・週平均は当月なら今日を含む経過暦日、過去月なら全日数を基準にする。",
             false,
         )
         .field(
@@ -257,5 +350,13 @@ mod tests {
     fn truncates_without_splitting_utf8() {
         assert_eq!(truncate_chars("あいうえお", 4), "あいう…");
         assert_eq!(truncate_chars("abc", 4), "abc");
+    }
+
+    #[test]
+    fn escapes_roster_markdown_and_flattens_newlines() {
+        assert_eq!(
+            escape_roster_markdown("#設計\n-班_[A]"),
+            "\\#設計 \\-班\\_\\[A\\]"
+        );
     }
 }

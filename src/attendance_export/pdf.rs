@@ -6,7 +6,7 @@ use printpdf::{
     Point, Pt, TextItem,
 };
 
-use super::{ExportRow, MonthlyExport, format_cell_duration};
+use super::{ExportRow, IdentityMode, MonthlyExport, format_cell_duration};
 
 pub(super) fn pdf_font_path() -> anyhow::Result<PathBuf> {
     if let Ok(path) = env::var("ATTENDANCE_PDF_FONT_PATH") {
@@ -107,19 +107,27 @@ fn wrap_pdf_text(value: &str, max_width_pt: f32, font_size: f32) -> Vec<String> 
     lines
 }
 
-fn user_info_parts(row: &ExportRow) -> Vec<String> {
+fn user_info_parts(row: &ExportRow, identity_mode: IdentityMode) -> Vec<String> {
     let mut parts = Vec::new();
     if let Some(generation) = row.generation {
         parts.push(format!("{generation}代"));
     }
-    parts.push(row.export_name().to_owned());
+    parts.push(identity_mode.name(row).to_owned());
+    if identity_mode == IdentityMode::WithDiscordName {
+        parts.push(format!("Discord: {}", row.display_name));
+    }
     if let Some(role) = row.role.as_deref() {
         parts.push(format!("（{role}）"));
     }
     parts
 }
 
-fn layout_user_info(row: &ExportRow, cell_width: f32, row_height: f32) -> UserInfoLayout {
+fn layout_user_info(
+    row: &ExportRow,
+    identity_mode: IdentityMode,
+    cell_width: f32,
+    row_height: f32,
+) -> UserInfoLayout {
     const MM_TO_PT: f32 = 72.0 / 25.4;
     const MAX_FONT_SIZE: f32 = 7.5;
     const MIN_HORIZONTAL_PADDING: f32 = 1.0;
@@ -127,7 +135,7 @@ fn layout_user_info(row: &ExportRow, cell_width: f32, row_height: f32) -> UserIn
 
     let max_width_pt = (cell_width - MIN_HORIZONTAL_PADDING * 2.0) * MM_TO_PT;
     let available_height = row_height - VERTICAL_PADDING * 2.0;
-    let parts = user_info_parts(row);
+    let parts = user_info_parts(row, identity_mode);
     let mut font_size = MAX_FONT_SIZE;
 
     loop {
@@ -216,6 +224,7 @@ fn add_pdf_table(
     rows: &[ExportRow],
     font: &PdfFontHandle,
     top: f32,
+    identity_mode: IdentityMode,
 ) {
     let page_width = 297.0_f32;
     let margin = 8.0_f32;
@@ -261,7 +270,7 @@ fn add_pdf_table(
 
     for (row_index, row) in rows.iter().enumerate() {
         let row_top = top - row_height * (row_index + 1) as f32;
-        let user_info = layout_user_info(row, user_width, row_height);
+        let user_info = layout_user_info(row, identity_mode, user_width, row_height);
         let text_height = user_info.line_height * user_info.lines.len() as f32;
         let font_height = user_info.font_size * 0.3528;
         let first_baseline = row_top - (row_height - text_height) / 2.0 - font_height * 0.8;
@@ -296,7 +305,7 @@ fn add_pdf_table(
     }
 }
 
-pub fn to_pdf(export: &MonthlyExport) -> anyhow::Result<Vec<u8>> {
+pub fn to_pdf(export: &MonthlyExport, identity_mode: IdentityMode) -> anyhow::Result<Vec<u8>> {
     let font_path = pdf_font_path()?;
     let font_bytes = std::fs::read(&font_path)
         .map_err(|error| anyhow::anyhow!("PDFフォントを読み込めない: {error}"))?;
@@ -352,7 +361,7 @@ pub fn to_pdf(export: &MonthlyExport) -> anyhow::Result<Vec<u8>> {
                 5.0,
             );
         }
-        add_pdf_table(&mut ops, export, rows, &font, 185.0);
+        add_pdf_table(&mut ops, export, rows, &font, 185.0, identity_mode);
         pages.push(PdfPage::new(Mm(297.0), Mm(210.0), ops));
     }
 
@@ -383,15 +392,19 @@ mod tests {
             generation: Some(17),
             real_name: Some(real_name.into()),
             role: Some(role.into()),
+            name_reading: Some("やまだたろう".into()),
             daily_seconds: Vec::new(),
             total_seconds: 0,
         };
 
-        let layout = layout_user_info(&row, 48.0, 8.0);
+        let layout = layout_user_info(&row, IdentityMode::WithDiscordName, 48.0, 8.0);
         assert!(layout.lines.len() > 3);
         assert!(layout.font_size >= 3.0);
         assert!(layout.line_height * layout.lines.len() as f32 <= 8.0 - 1.2);
-        assert_eq!(layout.lines.concat(), format!("17代{real_name}（{role}）"));
+        assert_eq!(
+            layout.lines.concat(),
+            format!("17代{real_name}Discord: Discord表示名（{role}）")
+        );
         assert!(!layout.lines.iter().any(|line| line.contains('…')));
         assert!(!layout.lines.iter().any(|line| line.contains("9876543210")));
 
@@ -400,5 +413,24 @@ mod tests {
             let width_pt = line.chars().map(pdf_character_width_em).sum::<f32>() * layout.font_size;
             assert!(width_pt <= max_width_pt + f32::EPSILON);
         }
+    }
+
+    #[test]
+    fn real_name_only_pdf_identity_excludes_discord_name() {
+        let row = ExportRow {
+            user_id: 1,
+            display_name: "Discord表示名".into(),
+            generation: None,
+            real_name: None,
+            role: None,
+            name_reading: None,
+            daily_seconds: Vec::new(),
+            total_seconds: 0,
+        };
+
+        assert_eq!(
+            user_info_parts(&row, IdentityMode::RealNameOnly),
+            vec!["未設定"]
+        );
     }
 }

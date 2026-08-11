@@ -18,13 +18,9 @@ fn now_and_optional_time(at: Option<&str>) -> Result<(i64, i64), Error> {
     ))
 }
 
-/// 活動を開始する。
-#[poise::command(slash_command, guild_only)]
-pub async fn start(
+async fn start_impl(
     ctx: Context<'_>,
-    #[description = "開始時刻（HH:MM）。省略時は現在時刻"] at: Option<String>,
-    #[description = "活動内容の備考"]
-    #[max_length = 500]
+    at: Option<String>,
     note: Option<String>,
 ) -> Result<(), Error> {
     defer_ephemeral(ctx).await?;
@@ -67,15 +63,31 @@ pub async fn start(
     send_response(ctx, content).await
 }
 
-/// 現在の活動を終了する。
-#[poise::command(slash_command, guild_only, rename = "end")]
-pub async fn end(
+/// 活動を開始する。
+#[poise::command(slash_command, guild_only)]
+pub async fn start(
     ctx: Context<'_>,
-    #[description = "終了時刻（HH:MM）。省略時は現在時刻"] at: Option<String>,
-    #[description = "終了時に設定する備考"]
+    #[description = "開始時刻（HH:MM）。省略時は現在時刻"] at: Option<String>,
+    #[description = "活動内容の備考"]
     #[max_length = 500]
     note: Option<String>,
 ) -> Result<(), Error> {
+    start_impl(ctx, at, note).await
+}
+
+/// `/attendance start` の短縮名として活動を開始する。
+#[poise::command(slash_command, guild_only, rename = "join")]
+pub async fn join(
+    ctx: Context<'_>,
+    #[description = "開始時刻（HH:MM）。省略時は現在時刻"] at: Option<String>,
+    #[description = "活動内容の備考"]
+    #[max_length = 500]
+    note: Option<String>,
+) -> Result<(), Error> {
+    start_impl(ctx, at, note).await
+}
+
+async fn end_impl(ctx: Context<'_>, at: Option<String>, note: Option<String>) -> Result<(), Error> {
     defer_ephemeral(ctx).await?;
     let (guild_id, user_id) = ids(ctx)?;
     let now_utc = Utc::now();
@@ -126,6 +138,30 @@ pub async fn end(
     };
     refresh_status_activity(ctx, "end").await;
     send_response(ctx, content).await
+}
+
+/// 現在の活動を終了する。
+#[poise::command(slash_command, guild_only, rename = "end")]
+pub async fn end(
+    ctx: Context<'_>,
+    #[description = "終了時刻（HH:MM）。省略時は現在時刻"] at: Option<String>,
+    #[description = "終了時に設定する備考"]
+    #[max_length = 500]
+    note: Option<String>,
+) -> Result<(), Error> {
+    end_impl(ctx, at, note).await
+}
+
+/// `/attendance end` の短縮名として活動を終了する。
+#[poise::command(slash_command, guild_only, rename = "exit")]
+pub async fn exit(
+    ctx: Context<'_>,
+    #[description = "終了時刻（HH:MM）。省略時は現在時刻"] at: Option<String>,
+    #[description = "終了時に設定する備考"]
+    #[max_length = 500]
+    note: Option<String>,
+) -> Result<(), Error> {
+    end_impl(ctx, at, note).await
 }
 
 /// 直近の終了済み記録を活動中へ戻す。

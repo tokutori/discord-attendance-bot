@@ -1,7 +1,7 @@
 use chrono::Utc;
 use poise::{CreateReply, serenity_prelude as serenity};
 
-use crate::{Context, Error, attendance_export, presentation, repository, time};
+use crate::{Context, Error, attendance_export, presentation, repository, text, time};
 
 #[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
 enum ExportMode {
@@ -68,7 +68,7 @@ pub async fn help(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-/// CSV・PDFに使用する本人の代・本名・役割を設定する。
+/// CSV・PDFと活動中名簿に使用する本人の代・本名・役割・読み仮名を設定する。
 #[poise::command(slash_command, guild_only)]
 pub async fn userconfig(
     ctx: Context<'_>,
@@ -79,25 +79,52 @@ pub async fn userconfig(
     #[description = "代表・新入生・班名などの役割"]
     #[max_length = 100]
     role: Option<String>,
+    #[description = "名簿を五十音順に並べるための本名の読み仮名"]
+    #[max_length = 100]
+    name_reading: Option<String>,
 ) -> Result<(), Error> {
     ctx.defer_ephemeral().await?;
     let (guild_id, user_id) = ids(ctx)?;
     let real_name = real_name.as_deref().map(str::trim);
     let role = role.as_deref().map(str::trim);
-    if real_name.is_some_and(str::is_empty) || role.is_some_and(str::is_empty) {
+    let name_reading = name_reading.as_deref().map(str::trim);
+    if real_name.is_some_and(str::is_empty)
+        || role.is_some_and(str::is_empty)
+        || name_reading.is_some_and(str::is_empty)
+    {
         ctx.send(
             CreateReply::default()
                 .embed(presentation::error_embed(
                     "ユーザー設定を確認してください",
-                    "本名と役割には空白だけの値を指定できない。",
+                    "本名・役割・名前の読みには空白だけの値を指定できない。",
                 ))
                 .ephemeral(true),
         )
         .await?;
         return Ok(());
     }
+    let normalized_name_reading = name_reading.map(text::normalize_name_reading);
+    let normalized_name_reading = match normalized_name_reading {
+        Some(Some(value)) => Some(value),
+        Some(None) => {
+            ctx.send(
+                CreateReply::default()
+                    .embed(presentation::error_embed(
+                        "名前の読みを確認してください",
+                        "名前の読みは、ひらがなまたはカタカナで入力してください。",
+                    ))
+                    .ephemeral(true),
+            )
+            .await?;
+            return Ok(());
+        }
+        None => None,
+    };
 
-    let has_update = generation.is_some() || real_name.is_some() || role.is_some();
+    let has_update = generation.is_some()
+        || real_name.is_some()
+        || role.is_some()
+        || normalized_name_reading.is_some();
     let profile = if has_update {
         Some(
             repository::upsert_user_profile(
@@ -108,6 +135,7 @@ pub async fn userconfig(
                     generation,
                     real_name,
                     role,
+                    name_reading: normalized_name_reading.as_deref(),
                 },
                 Utc::now().timestamp(),
             )
@@ -156,15 +184,30 @@ pub async fn export(
             .await?;
     let profiles = repository::user_profiles_for_export(&ctx.data().database, guild_id).await?;
     let export = attendance_export::build_monthly_export(year_month, &sessions, &profiles, now)?;
-    let csv = attendance_export::to_csv(&export);
-    let pdf = attendance_export::to_pdf(&export)?;
+    let csv_with_discord =
+        attendance_export::to_csv(&export, attendance_export::IdentityMode::WithDiscordName);
+    let csv_real_name_only =
+        attendance_export::to_csv(&export, attendance_export::IdentityMode::RealNameOnly);
+    let pdf_with_discord =
+        attendance_export::to_pdf(&export, attendance_export::IdentityMode::WithDiscordName)?;
+    let pdf_real_name_only =
+        attendance_export::to_pdf(&export, attendance_export::IdentityMode::RealNameOnly)?;
     let size_limit = attachment_size_limit(ctx);
-    if csv.len() > size_limit || pdf.len() > size_limit {
+    let generated_sizes = [
+        ("Discord表示名ありCSV", csv_with_discord.len()),
+        ("本名のみCSV", csv_real_name_only.len()),
+        ("Discord表示名ありPDF", pdf_with_discord.len()),
+        ("本名のみPDF", pdf_real_name_only.len()),
+    ];
+    if generated_sizes.iter().any(|(_, size)| *size > size_limit) {
+        let sizes = generated_sizes
+            .iter()
+            .map(|(label, size)| format!("{label}: {:.2} MiB", *size as f64 / 1_048_576.0))
+            .collect::<Vec<_>>()
+            .join("\n");
         let description = format!(
-            "生成したファイルが、この操作で許可された添付上限を超えている。\n\n上限: {:.2} MiB\nCSV: {:.2} MiB\nPDF: {:.2} MiB\n\nPDF用フォントや対象人数を確認してほしい。",
+            "生成したファイルが、この操作で許可された添付上限を超えている。\n\n上限: {:.2} MiB\n{sizes}\n\nPDF用フォントや対象人数を確認してほしい。",
             size_limit as f64 / 1_048_576.0,
-            csv.len() as f64 / 1_048_576.0,
-            pdf.len() as f64 / 1_048_576.0,
         );
         ctx.send(
             CreateReply::default()
@@ -180,10 +223,12 @@ pub async fn export(
     let notice = repository::peek_auto_end_notice(&ctx.data().database, guild_id, user_id).await?;
     let month_label = format!("{}-{:02}", year_month.year, year_month.month);
     let mut description = format!(
-        "対象月: {month_label}\nユーザー数: {}\nCSV: {}行 × {}列\nPDF: {}行 × {}列\nユーザー設定: 代・本名・役割を反映\n送信範囲: {}",
+        "対象月: {month_label}\nユーザー数: {}\nDiscord表示名ありCSV: {}行 × {}列\n本名のみCSV: {}行 × {}列\nPDF: 各{}行 × {}列\nユーザー設定: 代・本名・役割・名前の読みを反映\n並び順: 役割 → 代 → 名前の読み\n送信範囲: {}",
         export.row_count(),
         export.row_count() + 1,
-        export.csv_column_count(),
+        export.csv_column_count(attendance_export::IdentityMode::WithDiscordName),
+        export.row_count() + 1,
+        export.csv_column_count(attendance_export::IdentityMode::RealNameOnly),
         export.row_count() + 1,
         export.pdf_column_count(),
         if publish {
@@ -207,15 +252,19 @@ pub async fn export(
         .title("活動時間エクスポート")
         .description(description)
         .color(0x2f80ed);
-    let csv_name = format!("attendance-{month_label}.csv");
-    let pdf_name = format!("attendance-{month_label}.pdf");
+    let csv_with_discord_name = format!("attendance-{month_label}-with-discord.csv");
+    let csv_real_name_only_name = format!("attendance-{month_label}-real-name-only.csv");
+    let pdf_with_discord_name = format!("attendance-{month_label}-with-discord.pdf");
+    let pdf_real_name_only_name = format!("attendance-{month_label}-real-name-only.pdf");
     if publish {
         ctx.channel_id()
             .send_message(
                 ctx.serenity_context(),
                 serenity::CreateMessage::new().embed(embed).add_files([
-                    serenity::CreateAttachment::bytes(csv, csv_name),
-                    serenity::CreateAttachment::bytes(pdf, pdf_name),
+                    serenity::CreateAttachment::bytes(csv_with_discord, csv_with_discord_name),
+                    serenity::CreateAttachment::bytes(csv_real_name_only, csv_real_name_only_name),
+                    serenity::CreateAttachment::bytes(pdf_with_discord, pdf_with_discord_name),
+                    serenity::CreateAttachment::bytes(pdf_real_name_only, pdf_real_name_only_name),
                 ]),
             )
             .await?;
@@ -246,8 +295,22 @@ pub async fn export(
         ctx.send(
             CreateReply::default()
                 .embed(preview_embed)
-                .attachment(serenity::CreateAttachment::bytes(csv, csv_name))
-                .attachment(serenity::CreateAttachment::bytes(pdf, pdf_name))
+                .attachment(serenity::CreateAttachment::bytes(
+                    csv_with_discord,
+                    csv_with_discord_name,
+                ))
+                .attachment(serenity::CreateAttachment::bytes(
+                    csv_real_name_only,
+                    csv_real_name_only_name,
+                ))
+                .attachment(serenity::CreateAttachment::bytes(
+                    pdf_with_discord,
+                    pdf_with_discord_name,
+                ))
+                .attachment(serenity::CreateAttachment::bytes(
+                    pdf_real_name_only,
+                    pdf_real_name_only_name,
+                ))
                 .ephemeral(true),
         )
         .await?;

@@ -227,7 +227,7 @@
           <tr>
             <td><code>/attendanceexport export</code></td>
             <td><code>month</code>、<code>mode</code></td>
-            <td>指定月の CSV と PDF を preview または publish で出力する。</td>
+            <td>指定月のDiscord表示名あり版・本名のみ版の CSV と PDF（計4ファイル）を preview または publish で出力する。</td>
           </tr>
           <tr>
             <td><code>/attendanceexport userconfig</code></td>
@@ -300,10 +300,13 @@
 
       <h4>表示内容</h4>
       <pre><code>/attendance start [at] [note]
+/join [at] [note]（start の短縮名）
 /attendance end [at] [note]
+/exit [at] [note]（end の短縮名）
 /attendance continue
 /attendance revert
 /attendance status
+/attendance list
 /attendance history [limit]
 /attendance month [target]
 /attendance edit record [start] [end] [note]
@@ -311,7 +314,7 @@
 /attendance confirm id</code></pre>
 
       <h3>5.2 <code>/attendance start</code></h3>
-      <p>新しい活動記録を開始する。</p>
+      <p>新しい活動記録を開始する。トップレベルの <code>/join</code> は同じ引数と処理を共有する短縮名である。</p>
 
       <h4>引数</h4>
       <table>
@@ -340,7 +343,7 @@
       <p><code>at</code> や <code>note</code> が指定されても、重複開始時には既存記録へ反映しない。修正は <code>/attendance edit</code> で行う。</p>
 
       <h3>5.3 <code>/attendance end</code></h3>
-      <p>現在活動中の記録を終了する。</p>
+      <p>現在活動中の記録を終了する。トップレベルの <code>/exit</code> は同じ引数と処理を共有する短縮名である。</p>
 
       <h4>引数</h4>
       <table>
@@ -416,6 +419,9 @@
 
       <h4>非活動中</h4>
       <pre><code>現在、活動中の記録はない。</code></pre>
+
+      <h3>5.6.1 <code>/attendance list</code></h3>
+      <p>guild内で現在活動中の全メンバーを ephemeral Embed の名簿として表示する。役割、代（整数の昇順）、<code>name_reading</code>（五十音順）の階層で並べ、本名と活動開始時に保存したDiscord表示名を併記する。Embed descriptionでは <code># 役割</code>、<code>## 代</code>、<code>- 本名（Discord表示名）</code> のMarkdownを使用する。ユーザー入力は改行を空白へ変換してMarkdown記号をescapeする。Discordの文字数上限を超える名簿は階層見出しを繰り返して複数のephemeral Embedへ分割し、メンバーを欠落させない。役割・代の未設定グループと、userconfigがすべて未設定のメンバーは設定済みメンバーより後に表示する。読みが未設定の場合も名簿から除外せず、本名またはDiscord表示名を安定したフォールバック順に使用する。</p>
 
       <h3>5.7 <code>/attendance history</code></h3>
       <p>本人の最近の活動記録を Embed で一覧表示する。</p>
@@ -540,10 +546,10 @@ Bem130
 
       <h3>5.12 <code>/attendanceexport help</code> / <code>export</code> / <code>userconfig</code></h3>
       <p><code>/attendanceexport help</code> は月次ファイル出力の使い方を Embed で表示する。</p>
-      <p><code>/attendanceexport export</code> は <code>month</code> を必須とし、<code>YYYY-MM</code> 形式の指定月について CSV と PDF を同時に生成する。<code>mode</code> は <code>preview</code> または <code>publish</code> で、既定値は <code>preview</code> とする。全メンバーの本名を含み得るため、実行者には「サーバー管理」権限を要求する。Botにはメッセージ送信・Embed・ファイル添付権限を要求する。<code>preview</code> は実行者だけに表示し、<code>publish</code> は生成成功時のみ別の公開メッセージとして送信する。処理開始、エラー、公開成功の確認はどちらのmodeでもephemeralとする。</p>
-      <p><code>/attendanceexport userconfig</code> は本人の <code>generation</code>（代・整数）、<code>real_name</code>（本名）、<code>role</code>（代表、新入生、班名などの自由記述）を設定する。引数なしでは現在値を ephemeral Embed で表示し、一部の引数だけを指定した場合は指定していない設定を保持する。設定結果もEmbedで各項目を説明する。</p>
+      <p><code>/attendanceexport export</code> は <code>month</code> を必須とし、<code>YYYY-MM</code> 形式の指定月についてDiscord表示名あり版と本名のみ版の CSV と PDF、合計4ファイルを同時に生成する。<code>mode</code> は <code>preview</code> または <code>publish</code> で、既定値は <code>preview</code> とする。全メンバーの本名を含み得るため、実行者には「サーバー管理」権限を要求する。Botにはメッセージ送信・Embed・ファイル添付権限を要求する。<code>preview</code> は実行者だけに表示し、<code>publish</code> は生成成功時のみ別の公開メッセージとして送信する。処理開始、エラー、公開成功の確認はどちらのmodeでもephemeralとする。</p>
+      <p><code>/attendanceexport userconfig</code> は本人の <code>generation</code>（代・整数）、<code>real_name</code>（本名）、<code>role</code>（代表、新入生、班名などの自由記述）、<code>name_reading</code>（活動中名簿の五十音順に使う読み）を設定する。読みはひらがな・カタカナを受け付け、ひらがなへ正規化して保存する。引数なしでは現在値を ephemeral Embed で表示し、一部の引数だけを指定した場合は指定していない設定を保持する。設定結果もEmbedで各項目を説明する。</p>
       <h4>表の構造</h4>
-      <p>表の縦方向は対象月に記録があるユーザー、横方向は対象月の日数にユーザー情報列と合計列を加えたものとする。CSVでは代・本名・役割・Discord表示名を個別の列とし、PDFではユーザー情報欄にまとめる。本名未設定時はDiscord表示名を使用する。CSVのユーザー入力列は表計算ソフトの数式として評価される危険な先頭文字を無害化し、その後でCSV構文をescapeする。活動時間があるセルは <code>時間:分</code> 形式で表示する。PDFの活動時間0セルは空欄、CSVの活動時間0セルは <code>0:00</code> とする。PDFの文字はセル内で上下中央揃えとし、長い代・本名・役割は省略せず折り返しと文字サイズ調整を行う。活動中の記録は出力時点までを暫定値として含める。</p>
+      <p>表の縦方向は対象月に記録があるユーザー、横方向は対象月の日数にユーザー情報列と合計列を加えたものとする。4ファイルは <code>/attendance list</code> と共通の比較処理により、役割、代（昇順）、名前の読み（五十音順）で並べる。Discord表示名ありCSVでは代・本名・役割・Discord表示名を個別の列とし、PDFではユーザー情報欄にまとめる。本名のみ版はDiscord表示名を含めず、本名未設定時は「未設定」と表示する。CSVのユーザー入力列は表計算ソフトの数式として評価される危険な先頭文字を無害化し、その後でCSV構文をescapeする。活動時間があるセルは <code>時間:分</code> 形式で表示する。PDFの活動時間0セルは空欄、CSVの活動時間0セルは <code>0:00</code> とする。PDFの文字はセル内で上下中央揃えとし、長い代・本名・役割・Discord表示名は省略せず折り返しと文字サイズ調整を行う。活動中の記録は出力時点までを暫定値として含める。</p>
       <h4>注記</h4>
       <p>指定月がまだ終了していない場合は、暫定集計であることを応答と PDF に記載する。指定月の翌月1日に出力した場合は、ユーザーが修正する可能性があるため確定版ではないことを応答と PDF に記載する。</p>
     </section>
@@ -606,7 +612,7 @@ WHERE deleted_at IS NULL;</code></pre>
       <p><code>attendance_changes</code> は、各成功した変更操作についてguild・user・対象記録・操作種別・操作前後の開始時刻・終了時刻・連続活動開始点・備考・削除時刻を保存し、<code>reverted_at</code> で取り消し済みかを管理する。取り消し処理は最新の未取り消し変更を対象とし、現在状態が保存済みの変更後状態と一致しない場合は安全のため実行しない。session・guild・userを組にした外部キーで所有者の不一致を拒否する。</p>
       <p><code>pending_attendance_actions</code> は <code>edit</code>、<code>delete</code>、<code>revert</code> の確認要求とプレビュー時の <code>open_since</code> を保存する。確認IDは5文字で発行から5分間有効、要求者のguild・userに限定し、確定後、期限切れ、状態不一致、重複区間発生時は再利用できない。<code>change_id</code> によってrevert対象の変更へ関連付ける。</p>
       <p><code>attendance_auto_end_events</code> は独立したイベントID、自動終了時刻、適用時刻、通知済み時刻、ユーザー入力による訂正時刻を保存する。同じsessionでも <code>continue</code> 後の再自動終了を別イベントとして保持し、未訂正のイベントはsessionごとに最大1件とする。</p>
-      <p><code>attendance_user_profiles</code> はguild・userごとに代、本名、役割を保存する。Discord user IDを本人識別の主キーとし、表示名や本名は識別子として使用しない。</p>
+      <p><code>attendance_user_profiles</code> はguild・userごとに代、本名、役割、名簿用の名前の読みを保存する。Discord user IDを本人識別の主キーとし、表示名や本名は識別子として使用しない。本名とDiscord表示名には文字種・構造・一意性を仮定せず、入力された文字列を表示用に保持する。</p>
     </section>
 
     <section>
@@ -651,7 +657,7 @@ effective_end   = min(ended_at, month_end)
 duration        = max(effective_end - effective_start, 0)</code></pre>
       <p>1回あたり平均は <code>total / session_count</code>、1日あたり平均は <code>total / elapsed_calendar_days</code>、1週間あたり平均は <code>total * 7 / elapsed_calendar_days</code> とする。秒未満は整数除算で切り捨てる。<code>elapsed_calendar_days</code> は当月では今日を含む経過暦日、過去月では全日数、未来月では0とする。</p>
       <h3>9.1 月次ファイル出力</h3>
-      <p><code>/attendanceexport export</code> は同じ月内重複計算をユーザー別・日別に展開し、<code>attendance_user_profiles</code> の代・本名・役割を反映したCSVとPDFにする。ファイル出力では活動中の記録も出力時点までの暫定値として含める。出力表はユーザー行、日付列、合計列で構成する。生成後はinteraction固有の添付サイズ上限を各ファイルについて検査し、超過時は送信しない。</p>
+      <p><code>/attendanceexport export</code> は同じ月内重複計算をユーザー別・日別に展開し、<code>attendance_user_profiles</code> の代・本名・役割・名前の読みを反映したDiscord表示名あり版・本名のみ版のCSVとPDF（計4ファイル）にする。全ファイルは活動中名簿と共通の比較処理で並べる。ファイル出力では活動中の記録も出力時点までの暫定値として含める。出力表はユーザー行、日付列、合計列で構成する。生成後はinteraction固有の添付サイズ上限を各ファイルについて検査し、超過時は送信しない。</p>
       <p>PDF 生成には <a href="https://docs.rs/printpdf/latest/printpdf/">printpdf</a> を採用する。表の配置・改ページ・文字レイアウトは Bot 側で明示的に制御し、保存時に <code>PdfSaveOptions.subset_fonts = true</code> を指定する。これにより、PDF に現れる文字のグリフだけを TTF から埋め込み、CJK フォント全体の埋め込みによる添付サイズ増大を避ける。日本語フォントは環境依存のため、<code>ATTENDANCE_PDF_FONT_PATH</code> で TTF を指定できる。</p>
       <p><a href="https://docs.rs/genpdf/latest/genpdf/">genpdf</a> は <a href="https://docs.rs/genpdf/latest/genpdf/elements/">TableLayout</a> など高レベル API が便利だが、今回の使用文字だけのサブセット埋め込みを明示的に保証しにくいため採用しない。<a href="https://docs.rs/lopdf/latest/lopdf/">lopdf</a> / <a href="https://docs.rs/lopdf-table/latest/lopdf_table/">lopdf-table</a> は PDF 構造や表の細かな後処理が必要になった場合の候補とする。</p>
     </section>
@@ -662,8 +668,8 @@ duration        = max(effective_end - effective_start, 0)</code></pre>
         <li>通常の操作結果は原則として ephemeral response とする。</li>
         <li>Slash Command の利用者向け応答は、成功結果・想定内の入力エラー・権限エラーを含め、原則として本人だけが見られる ephemeral Embed を使用する。</li>
         <li><code>history</code>、<code>month</code>、<code>help</code> は専用レイアウトの Embed を使用する。</li>
-        <li><code>/attendanceexport userconfig</code> は現在値または更新後の代・本名・役割を ephemeral Embed で表示する。</li>
-        <li><code>/attendanceexport export</code> は <code>preview</code> では ephemeral に添付する。<code>publish</code> でも処理中・エラー・成功確認はephemeralとし、生成成功後だけ別の公開メッセージへCSVとPDFを添付する。</li>
+        <li><code>/attendanceexport userconfig</code> は現在値または更新後の代・本名・役割・名前の読みを ephemeral Embed で表示する。</li>
+        <li><code>/attendanceexport export</code> は <code>preview</code> では4ファイルを ephemeral に添付する。<code>publish</code> でも処理中・エラー・成功確認はephemeralとし、生成成功後だけ別の公開メッセージへ4ファイルを添付する。</li>
         <li>自動終了通知はユーザー応答への付加に成功した後で通知済みにする。公開export本文やPDFには実行者個人の通知を含めない。</li>
         <li>コマンドエラーは入力形式、PDFフォント、添付サイズ、データベース、Discord通信などの種別に分類し、原因と対処を Embed で説明する。秘密情報や認証情報は表示しない。</li>
         <li><code>revert</code> は直前の成功した変更操作を1件取り消し、操作内容と対象記録を Embed で説明する。<code>revert</code> 自体は履歴に積まれないため、連続実行では過去の変更を順に取り消せる。</li>

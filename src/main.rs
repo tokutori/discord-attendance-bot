@@ -37,7 +37,12 @@ async fn main() -> anyhow::Result<()> {
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![commands::attendance(), commands::attendanceexport()],
+            commands: vec![
+                commands::attendance(),
+                commands::join(),
+                commands::exit(),
+                commands::attendanceexport(),
+            ],
             on_error: |error| {
                 Box::pin(async move {
                     if let Err(error) = framework_error::handle(error).await {

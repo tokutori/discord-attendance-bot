@@ -8,7 +8,7 @@ pub async fn get_user_profile(
     user_id: i64,
 ) -> Result<Option<UserProfile>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT guild_id, user_id, generation, real_name, role, updated_at
+        "SELECT guild_id, user_id, generation, real_name, role, name_reading, updated_at
          FROM attendance_user_profiles
          WHERE guild_id = ? AND user_id = ?",
     )
@@ -27,20 +27,22 @@ pub async fn upsert_user_profile(
 ) -> Result<UserProfile, sqlx::Error> {
     sqlx::query_as(
         "INSERT INTO attendance_user_profiles (
-            guild_id, user_id, generation, real_name, role, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            guild_id, user_id, generation, real_name, role, name_reading, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (guild_id, user_id) DO UPDATE SET
             generation = COALESCE(excluded.generation, attendance_user_profiles.generation),
             real_name = COALESCE(excluded.real_name, attendance_user_profiles.real_name),
             role = COALESCE(excluded.role, attendance_user_profiles.role),
+            name_reading = COALESCE(excluded.name_reading, attendance_user_profiles.name_reading),
             updated_at = excluded.updated_at
-         RETURNING guild_id, user_id, generation, real_name, role, updated_at",
+         RETURNING guild_id, user_id, generation, real_name, role, name_reading, updated_at",
     )
     .bind(guild_id)
     .bind(user_id)
     .bind(update.generation)
     .bind(update.real_name)
     .bind(update.role)
+    .bind(update.name_reading)
     .bind(now)
     .bind(now)
     .fetch_one(pool)
@@ -52,7 +54,7 @@ pub async fn user_profiles_for_export(
     guild_id: i64,
 ) -> Result<Vec<UserProfile>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT guild_id, user_id, generation, real_name, role, updated_at
+        "SELECT guild_id, user_id, generation, real_name, role, name_reading, updated_at
          FROM attendance_user_profiles
          WHERE guild_id = ?
          ORDER BY generation, real_name, user_id",
@@ -89,6 +91,7 @@ mod tests {
                 generation: Some(5),
                 real_name: Some("山田太郎"),
                 role: Some("代表"),
+                name_reading: Some("やまだたろう"),
             },
             100,
         )
@@ -96,6 +99,7 @@ mod tests {
         .unwrap();
         assert_eq!(created.generation, Some(5));
         assert_eq!(created.real_name.as_deref(), Some("山田太郎"));
+        assert_eq!(created.name_reading.as_deref(), Some("やまだたろう"));
 
         let updated = upsert_user_profile(
             &pool,
@@ -105,6 +109,7 @@ mod tests {
                 generation: None,
                 real_name: None,
                 role: Some("設計班"),
+                name_reading: None,
             },
             200,
         )
@@ -113,5 +118,6 @@ mod tests {
         assert_eq!(updated.generation, Some(5));
         assert_eq!(updated.real_name.as_deref(), Some("山田太郎"));
         assert_eq!(updated.role.as_deref(), Some("設計班"));
+        assert_eq!(updated.name_reading.as_deref(), Some("やまだたろう"));
     }
 }

@@ -3,7 +3,7 @@ use sqlx::{Sqlite, SqlitePool, Transaction};
 use crate::attendance::AttendanceSession;
 
 use super::{
-    SnapshotRow,
+    ActiveAttendanceMember, SnapshotRow,
     auto_end::mark_active_auto_end_corrected,
     change::{ChangeInput, insert_change, snapshot},
     transaction::begin_immediate,
@@ -51,6 +51,23 @@ pub async fn active_sessions(
         .bind(guild_id)
         .fetch_all(pool)
         .await
+}
+
+pub async fn active_attendance_members(
+    pool: &SqlitePool,
+    guild_id: i64,
+) -> Result<Vec<ActiveAttendanceMember>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT sessions.user_id, sessions.display_name,
+                profiles.generation, profiles.real_name, profiles.role, profiles.name_reading
+         FROM attendance_sessions sessions
+         LEFT JOIN attendance_user_profiles profiles
+           ON profiles.guild_id = sessions.guild_id AND profiles.user_id = sessions.user_id
+         WHERE sessions.guild_id = ? AND sessions.ended_at IS NULL AND sessions.deleted_at IS NULL",
+    )
+    .bind(guild_id)
+    .fetch_all(pool)
+    .await
 }
 
 pub async fn latest_completed(

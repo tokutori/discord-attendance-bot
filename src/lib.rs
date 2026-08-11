@@ -4,8 +4,10 @@ pub mod channel_status;
 pub mod commands;
 pub mod config;
 pub mod framework_error;
+pub mod member_order;
 pub mod presentation;
 pub mod repository;
+pub mod text;
 pub mod time;
 
 use sqlx::SqlitePool;

@@ -91,6 +91,7 @@ pub struct UserProfile {
     pub generation: Option<i64>,
     pub real_name: Option<String>,
     pub role: Option<String>,
+    pub name_reading: Option<String>,
     pub updated_at: i64,
 }
 
@@ -99,4 +100,15 @@ pub struct UserProfileUpdate<'a> {
     pub generation: Option<i64>,
     pub real_name: Option<&'a str>,
     pub role: Option<&'a str>,
+    pub name_reading: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+pub struct ActiveAttendanceMember {
+    pub user_id: i64,
+    pub display_name: String,
+    pub generation: Option<i64>,
+    pub real_name: Option<String>,
+    pub role: Option<String>,
+    pub name_reading: Option<String>,
 }

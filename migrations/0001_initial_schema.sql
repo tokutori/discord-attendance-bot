@@ -178,11 +178,13 @@ CREATE TABLE attendance_user_profiles (
     generation INTEGER,
     real_name TEXT,
     role TEXT,
+    name_reading TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (guild_id, user_id),
     CHECK (real_name IS NULL OR length(real_name) BETWEEN 1 AND 100),
-    CHECK (role IS NULL OR length(role) BETWEEN 1 AND 100)
+    CHECK (role IS NULL OR length(role) BETWEEN 1 AND 100),
+    CHECK (name_reading IS NULL OR length(name_reading) BETWEEN 1 AND 100)
 );
 
 CREATE INDEX attendance_user_profiles_export_order

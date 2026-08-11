@@ -5,9 +5,29 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Utc};
 
-use crate::{attendance::YearMonth, repository::UserProfile, time};
+use crate::{
+    attendance::YearMonth,
+    member_order::{self, MemberOrderKey},
+    repository::UserProfile,
+    time,
+};
 
 pub use pdf::to_pdf;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityMode {
+    WithDiscordName,
+    RealNameOnly,
+}
+
+impl IdentityMode {
+    pub fn name(self, row: &ExportRow) -> &str {
+        match self {
+            Self::WithDiscordName => row.export_name(),
+            Self::RealNameOnly => row.real_name.as_deref().unwrap_or("未設定"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportRow {
@@ -16,6 +36,7 @@ pub struct ExportRow {
     pub generation: Option<i64>,
     pub real_name: Option<String>,
     pub role: Option<String>,
+    pub name_reading: Option<String>,
     pub daily_seconds: Vec<i64>,
     pub total_seconds: i64,
 }
@@ -38,6 +59,17 @@ impl ExportRow {
     }
 }
 
+fn member_order_key(row: &ExportRow) -> MemberOrderKey<'_> {
+    MemberOrderKey {
+        user_id: row.user_id,
+        generation: row.generation,
+        real_name: row.real_name.as_deref(),
+        role: row.role.as_deref(),
+        name_reading: row.name_reading.as_deref(),
+        display_name: &row.display_name,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonthlyExport {
     pub year_month: YearMonth,
@@ -55,8 +87,13 @@ impl MonthlyExport {
         self.dates.len() + 2
     }
 
-    pub fn csv_column_count(&self) -> usize {
-        self.dates.len() + 5
+    pub fn csv_column_count(&self, identity_mode: IdentityMode) -> usize {
+        self.dates.len()
+            + if identity_mode == IdentityMode::WithDiscordName {
+                5
+            } else {
+                4
+            }
     }
 }
 
@@ -103,6 +140,7 @@ pub fn build_monthly_export(
                 generation: profile.and_then(|value| value.generation),
                 real_name: profile.and_then(|value| value.real_name.clone()),
                 role: profile.and_then(|value| value.role.clone()),
+                name_reading: profile.and_then(|value| value.name_reading.clone()),
                 daily_seconds: vec![0; day_count],
                 total_seconds: 0,
             }
@@ -154,13 +192,8 @@ pub fn build_monthly_export(
     }
 
     let mut rows = rows.into_values().collect::<Vec<_>>();
-    rows.sort_by_key(|row| {
-        (
-            row.generation.is_none(),
-            row.generation.unwrap_or_default(),
-            row.export_name().to_owned(),
-            row.user_id,
-        )
+    rows.sort_by(|left, right| {
+        member_order::compare(member_order_key(left), member_order_key(right))
     });
 
     Ok(MonthlyExport {
@@ -222,9 +255,12 @@ fn encode_csv_cell(value: &str) -> String {
     csv_escape(&sanitize_csv_cell_content(value))
 }
 
-pub fn to_csv(export: &MonthlyExport) -> Vec<u8> {
+pub fn to_csv(export: &MonthlyExport, identity_mode: IdentityMode) -> Vec<u8> {
     let mut output = String::from("\u{feff}");
-    output.push_str("代,本名,役割,Discord表示名");
+    output.push_str("代,本名,役割");
+    if identity_mode == IdentityMode::WithDiscordName {
+        output.push_str(",Discord表示名");
+    }
     for date in &export.dates {
         output.push(',');
         output.push_str(&format!("{}日", date.day()));
@@ -237,11 +273,13 @@ pub fn to_csv(export: &MonthlyExport) -> Vec<u8> {
                 .unwrap_or_default(),
         );
         output.push(',');
-        output.push_str(&encode_csv_cell(row.export_name()));
+        output.push_str(&encode_csv_cell(identity_mode.name(row)));
         output.push(',');
         output.push_str(&encode_csv_cell(row.role.as_deref().unwrap_or_default()));
-        output.push(',');
-        output.push_str(&encode_csv_cell(&row.display_name));
+        if identity_mode == IdentityMode::WithDiscordName {
+            output.push(',');
+            output.push_str(&encode_csv_cell(&row.display_name));
+        }
         for seconds in &row.daily_seconds {
             output.push(',');
             output.push_str(&format_csv_cell_duration(*seconds));
@@ -282,7 +320,13 @@ mod tests {
     }
 
     fn profile(user_id: i64) -> UserProfile {
-        profile_with(user_id, Some(5), Some("山田太郎"), Some("代表"))
+        profile_with(
+            user_id,
+            Some(5),
+            Some("山田太郎"),
+            Some("代表"),
+            Some("やまだたろう"),
+        )
     }
 
     fn profile_with(
@@ -290,6 +334,7 @@ mod tests {
         generation: Option<i64>,
         real_name: Option<&str>,
         role: Option<&str>,
+        name_reading: Option<&str>,
     ) -> UserProfile {
         UserProfile {
             guild_id: 1,
@@ -297,6 +342,7 @@ mod tests {
             generation,
             real_name: real_name.map(str::to_owned),
             role: role.map(str::to_owned),
+            name_reading: name_reading.map(str::to_owned),
             updated_at: 0,
         }
     }
@@ -334,11 +380,17 @@ mod tests {
         .unwrap();
         assert_eq!(export.row_count(), 1);
         assert_eq!(export.pdf_column_count(), 33);
-        assert_eq!(export.csv_column_count(), 36);
+        assert_eq!(export.csv_column_count(IdentityMode::WithDiscordName), 36);
+        assert_eq!(export.csv_column_count(IdentityMode::RealNameOnly), 35);
         assert_eq!(export.rows[0].daily_seconds[0], 90 * 60);
-        let csv = String::from_utf8(to_csv(&export)).unwrap();
+        let csv = String::from_utf8(to_csv(&export, IdentityMode::WithDiscordName)).unwrap();
         assert!(csv.contains("5,山田太郎,代表,山田"));
         assert!(csv.contains(",0:00"));
+
+        let real_name_only =
+            String::from_utf8(to_csv(&export, IdentityMode::RealNameOnly)).unwrap();
+        assert!(real_name_only.starts_with("\u{feff}代,本名,役割,1日"));
+        assert!(!real_name_only.contains("Discord表示名"));
     }
 
     #[test]
@@ -404,13 +456,14 @@ mod tests {
                 generation: Some(5),
                 real_name: Some(" \t=SUM(1,2)".into()),
                 role: Some("\n+代表".into()),
+                name_reading: Some("やまだたろう".into()),
                 daily_seconds: vec![0],
                 total_seconds: 0,
             }],
             notices: Vec::new(),
         };
 
-        let csv = String::from_utf8(to_csv(&export)).unwrap();
+        let csv = String::from_utf8(to_csv(&export, IdentityMode::WithDiscordName)).unwrap();
         assert!(csv.contains("\"' \t=SUM(1,2)\""));
         assert!(csv.contains("\"'\n+代表\""));
         assert!(csv.contains("'\u{0007}@discord"));
@@ -497,19 +550,19 @@ mod tests {
     }
 
     #[test]
-    fn sorts_profiles_by_generation_and_export_name_with_display_name_fallback() {
+    fn uses_shared_roster_order_for_monthly_export() {
         let started_at = local_timestamp(2026, 8, 1, 10, 0);
         let ended_at = local_timestamp(2026, 8, 1, 11, 0);
         let sessions = [
             session(1, "Zulu", started_at, ended_at),
-            session(2, "表示Beta", started_at, ended_at),
-            session(3, "Gamma", started_at, ended_at),
-            session(4, "表示Alpha", started_at, ended_at),
+            session(2, "Suzuki", started_at, ended_at),
+            session(3, "Ito", started_at, ended_at),
+            session(4, "Abe", started_at, ended_at),
         ];
         let profiles = [
-            profile_with(2, Some(2), Some("Beta"), None),
-            profile_with(3, Some(1), None, Some("会計")),
-            profile_with(4, Some(1), Some("Alpha"), Some("代表")),
+            profile_with(2, Some(5), Some("鈴木"), Some("設計"), Some("すずき")),
+            profile_with(3, Some(4), Some("伊藤"), Some("設計"), Some("いとう")),
+            profile_with(4, Some(4), Some("阿部"), Some("設計"), Some("あべ")),
         ];
 
         let export = build_monthly_export(
@@ -534,7 +587,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![4, 3, 2, 1]
         );
-        assert_eq!(export.rows[1].export_name(), "Gamma");
+        assert_eq!(export.rows[0].export_name(), "阿部");
         assert_eq!(export.rows[3].export_name(), "Zulu");
     }
 
@@ -555,12 +608,13 @@ mod tests {
                 generation: Some(5),
                 real_name: Some("山田太郎".into()),
                 role: Some("代表".into()),
+                name_reading: Some("やまだたろう".into()),
                 daily_seconds: vec![3600],
                 total_seconds: 3600,
             }],
             notices: vec!["暫定集計".into()],
         };
-        let pdf = to_pdf(&export).unwrap();
+        let pdf = to_pdf(&export, IdentityMode::WithDiscordName).unwrap();
         assert!(pdf.starts_with(b"%PDF-"));
         assert!(pdf.len() < 5_000_000);
     }
