@@ -91,16 +91,26 @@ pub async fn apply_due_auto_ends(
         if result.rows_affected() != 1 {
             continue;
         }
+        let change_id_at_application = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(MAX(id), 0) FROM attendance_changes
+             WHERE guild_id = ? AND user_id = ?",
+        )
+        .bind(guild_id)
+        .bind(session.user_id)
+        .fetch_one(&mut *tx)
+        .await?;
         let event = sqlx::query(
             "INSERT INTO attendance_auto_end_events (
-                session_id, guild_id, user_id, automatic_ended_at, applied_at
-             ) VALUES (?, ?, ?, ?, ?)",
+                session_id, guild_id, user_id, automatic_ended_at, applied_at,
+                change_id_at_application
+             ) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(session.id)
         .bind(guild_id)
         .bind(session.user_id)
         .bind(automatic_ended_at)
         .bind(now)
+        .bind(change_id_at_application)
         .execute(&mut *tx)
         .await?;
         notices.push(AutoEndNotice {
@@ -125,6 +135,11 @@ pub async fn latest_auto_ended(
          INNER JOIN attendance_auto_end_events a ON a.session_id = s.id
          WHERE s.guild_id = ? AND s.user_id = ? AND s.ended_at = a.automatic_ended_at
            AND s.deleted_at IS NULL AND a.corrected_at IS NULL
+           AND NOT EXISTS (
+               SELECT 1 FROM attendance_changes later
+               WHERE later.guild_id = a.guild_id AND later.user_id = a.user_id
+                 AND later.id > a.change_id_at_application
+           )
          ORDER BY a.applied_at DESC, a.id DESC LIMIT 1",
     )
     .bind(guild_id)
@@ -160,9 +175,15 @@ pub async fn correct_auto_ended_session(
 ) -> Result<Option<AutoEndCorrection>, sqlx::Error> {
     let mut tx = begin_immediate(pool).await?;
     let Some(event) = sqlx::query_as::<_, AutoEndEventIdentity>(
-        "SELECT id, automatic_ended_at FROM attendance_auto_end_events
-         WHERE session_id = ? AND guild_id = ? AND user_id = ? AND corrected_at IS NULL
-         ORDER BY applied_at DESC, id DESC LIMIT 1",
+        "SELECT a.id, a.automatic_ended_at FROM attendance_auto_end_events a
+         WHERE a.session_id = ? AND a.guild_id = ? AND a.user_id = ?
+           AND a.corrected_at IS NULL
+           AND NOT EXISTS (
+               SELECT 1 FROM attendance_changes later
+               WHERE later.guild_id = a.guild_id AND later.user_id = a.user_id
+                 AND later.id > a.change_id_at_application
+           )
+         ORDER BY a.applied_at DESC, a.id DESC LIMIT 1",
     )
     .bind(id)
     .bind(guild_id)

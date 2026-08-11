@@ -126,7 +126,7 @@ v1.0の初期schemaは `migrations/0001_initial_schema.sql` に集約し、次�
 - `attendance_sessions`: 活動記録
 - `attendance_changes`: 取り消し可能な変更履歴
 - `pending_attendance_actions`: `edit`、`delete`、`revert` の確認要求
-- `attendance_auto_end_events`: 21時自動終了と通知・訂正状態
+- `attendance_auto_end_events`: 21時自動終了、適用時点の変更履歴境界、通知・訂正状態
 - `attendance_user_profiles`: 代、本名、役割、名簿用の名前の読みの設定
 
 バックアップは Bot 停止中に、起動モードが選択した `DATABASE_URL_TEST` または `DATABASE_URL_RELEASE` のDBファイルをコピーするのが簡単である。稼働中に取得する場合は SQLite CLI の `.backup` または `VACUUM INTO` を使用する。

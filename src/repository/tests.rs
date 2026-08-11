@@ -504,6 +504,62 @@ async fn completed_manual_end_is_not_reclassified_as_old_auto_end() {
 }
 
 #[tokio::test]
+async fn later_session_supersedes_an_old_automatic_end_correction() {
+    let pool = test_pool().await;
+    let first_start = 100;
+    let automatic_end = 200;
+    let first_id = insert_session(&pool, 1, 2, "Bem", first_start, None, first_start)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE attendance_sessions SET ended_at = ?, open_since = NULL, updated_at = ?
+         WHERE id = ?",
+    )
+    .bind(automatic_end)
+    .bind(automatic_end)
+    .bind(first_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO attendance_auto_end_events
+            (session_id, guild_id, user_id, automatic_ended_at, applied_at,
+             change_id_at_application)
+         VALUES (?, 1, 2, ?, ?, 1)",
+    )
+    .bind(first_id)
+    .bind(automatic_end)
+    .bind(automatic_end)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Change IDs, rather than second-resolution timestamps, define the strict ordering.
+    let second_id = insert_session(&pool, 1, 2, "Bem", 300, None, automatic_end)
+        .await
+        .unwrap();
+    close_session(&pool, second_id, 1, 2, 400, None, automatic_end)
+        .await
+        .unwrap();
+
+    assert!(latest_auto_ended(&pool, 1, 2).await.unwrap().is_none());
+    assert!(
+        correct_auto_ended_session(&pool, first_id, 1, 2, 500, None, 500)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        get_owned(&pool, first_id, 1, 2)
+            .await
+            .unwrap()
+            .unwrap()
+            .ended_at,
+        Some(automatic_end)
+    );
+}
+
+#[tokio::test]
 async fn confirm_open_transition_conflicts_with_newer_open_session() {
     let pool = test_pool().await;
     let first = insert_session(&pool, 1, 2, "Bem", 100, None, 100)

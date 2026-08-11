@@ -159,6 +159,7 @@ CREATE TABLE attendance_auto_end_events (
     user_id INTEGER NOT NULL,
     automatic_ended_at INTEGER NOT NULL,
     applied_at INTEGER NOT NULL,
+    change_id_at_application INTEGER NOT NULL CHECK (change_id_at_application >= 0),
     notified_at INTEGER,
     corrected_at INTEGER,
     FOREIGN KEY (session_id, guild_id, user_id)

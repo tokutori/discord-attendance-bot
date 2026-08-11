@@ -611,7 +611,7 @@ WHERE deleted_at IS NULL;</code></pre>
       <p><code>open_since</code> は現在の連続活動開始点を表し、自動終了後の <code>continue</code> ではcontinue時刻へ更新する。INSERT/UPDATE triggerにより、同一guild・userの削除されていない活動区間どうしの重複を拒否する。</p>
       <p><code>attendance_changes</code> は、各成功した変更操作についてguild・user・対象記録・操作種別・操作前後の開始時刻・終了時刻・連続活動開始点・備考・削除時刻を保存し、<code>reverted_at</code> で取り消し済みかを管理する。取り消し処理は最新の未取り消し変更を対象とし、現在状態が保存済みの変更後状態と一致しない場合は安全のため実行しない。session・guild・userを組にした外部キーで所有者の不一致を拒否する。</p>
       <p><code>pending_attendance_actions</code> は <code>edit</code>、<code>delete</code>、<code>revert</code> の確認要求とプレビュー時の <code>open_since</code> を保存する。確認IDは5文字で発行から5分間有効、要求者のguild・userに限定し、確定後、期限切れ、状態不一致、重複区間発生時は再利用できない。<code>change_id</code> によってrevert対象の変更へ関連付ける。</p>
-      <p><code>attendance_auto_end_events</code> は独立したイベントID、自動終了時刻、適用時刻、通知済み時刻、ユーザー入力による訂正時刻を保存する。同じsessionでも <code>continue</code> 後の再自動終了を別イベントとして保持し、未訂正のイベントはsessionごとに最大1件とする。</p>
+      <p><code>attendance_auto_end_events</code> は独立したイベントID、自動終了時刻、適用時刻、適用時点の最新変更ID、通知済み時刻、ユーザー入力による訂正時刻を保存する。同じsessionでも <code>continue</code> 後の再自動終了を別イベントとして保持し、未訂正のイベントはsessionごとに最大1件とする。自動終了の適用後に別の変更履歴が追加されたイベントは、後日の <code>end</code> による自動訂正の対象にしない。</p>
       <p><code>attendance_user_profiles</code> はguild・userごとに代、本名、役割、名簿用の名前の読みを保存する。Discord user IDを本人識別の主キーとし、表示名や本名は識別子として使用しない。本名とDiscord表示名には文字種・構造・一意性を仮定せず、入力された文字列を表示用に保持する。</p>
     </section>
 

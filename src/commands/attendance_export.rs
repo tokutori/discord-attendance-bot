@@ -103,15 +103,14 @@ pub async fn userconfig(
         .await?;
         return Ok(());
     }
-    let normalized_name_reading = name_reading.map(text::normalize_name_reading);
-    let normalized_name_reading = match normalized_name_reading {
-        Some(Some(value)) => Some(value),
-        Some(None) => {
+    let normalized_name_reading = match name_reading.map(text::normalize_name_reading) {
+        Some(Ok(value)) => Some(value),
+        Some(Err(error)) => {
             ctx.send(
                 CreateReply::default()
                     .embed(presentation::error_embed(
                         "名前の読みを確認してください",
-                        "名前の読みは、ひらがなまたはカタカナで入力してください。",
+                        error.to_string(),
                     ))
                     .ephemeral(true),
             )
