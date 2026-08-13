@@ -1,10 +1,12 @@
 use sqlx::FromRow;
+use std::fmt;
+use thiserror::Error;
 
 use crate::attendance::AttendanceSession;
 
 #[derive(Debug, Clone)]
 pub struct ConfirmationInput<'a> {
-    pub action: &'a str,
+    pub action: ConfirmationAction,
     pub session_id: i64,
     pub change_id: Option<i64>,
     pub expected: &'a SessionSnapshot,
@@ -17,7 +19,7 @@ pub struct ConfirmationInput<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfirmationRequest {
     pub code: String,
-    pub action: String,
+    pub action: ConfirmationAction,
     pub session_id: i64,
     pub change_id: Option<i64>,
     pub target_started_at: Option<i64>,
@@ -42,13 +44,106 @@ pub struct RevertPreview {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfirmationResult {
     Confirmed {
-        action: String,
+        action: ConfirmationAction,
         session_id: i64,
         operation: Option<String>,
     },
     NotFound,
     Expired,
     Conflict,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The confirmation-protected operation requested by a user.
+pub enum ConfirmationAction {
+    Edit,
+    Delete,
+    Revert,
+}
+
+impl ConfirmationAction {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Edit => "edit",
+            Self::Delete => "delete",
+            Self::Revert => "revert",
+        }
+    }
+}
+
+impl fmt::Display for ConfirmationAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl TryFrom<String> for ConfirmationAction {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match value.as_str() {
+            "edit" => Ok(Self::Edit),
+            "delete" => Ok(Self::Delete),
+            "revert" => Ok(Self::Revert),
+            _ => Err(value),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A persisted activity change operation.
+pub enum ChangeOperation {
+    Start,
+    End,
+    Continue,
+    Edit,
+    Delete,
+}
+
+impl ChangeOperation {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::End => "end",
+            Self::Continue => "continue",
+            Self::Edit => "edit",
+            Self::Delete => "delete",
+        }
+    }
+}
+
+impl fmt::Display for ChangeOperation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl TryFrom<String> for ChangeOperation {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match value.as_str() {
+            "start" => Ok(Self::Start),
+            "end" => Ok(Self::End),
+            "continue" => Ok(Self::Continue),
+            "edit" => Ok(Self::Edit),
+            "delete" => Ok(Self::Delete),
+            _ => Err(value),
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+/// Typed failures raised while preserving activity-state invariants.
+pub enum SessionMutationError {
+    #[error("活動記録の時間帯が別の記録と重複している")]
+    Overlapping,
+    #[error("終了時刻は開始時刻以降である必要がある")]
+    EndBeforeStart,
+    #[error("活動記録の状態がDBの不変条件を満たさない: {0}")]
+    Invariant(&'static str),
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

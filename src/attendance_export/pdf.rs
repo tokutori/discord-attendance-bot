@@ -167,6 +167,9 @@ fn add_pdf_grid(
     row_height: f32,
     row_count: usize,
 ) {
+    let Some((&first_x, &last_x)) = x_positions.first().zip(x_positions.last()) else {
+        return;
+    };
     let bottom = top - row_height * row_count as f32;
     ops.push(Op::SetOutlineThickness { pt: Pt(0.2) });
     for &x in x_positions {
@@ -199,14 +202,14 @@ fn add_pdf_grid(
                 points: vec![
                     LinePoint {
                         p: Point {
-                            x: Mm(x_positions[0]).into(),
+                            x: Mm(first_x).into(),
                             y: Mm(y).into(),
                         },
                         bezier: false,
                     },
                     LinePoint {
                         p: Point {
-                            x: Mm(*x_positions.last().unwrap()).into(),
+                            x: Mm(last_x).into(),
                             y: Mm(y).into(),
                         },
                         bezier: false,

@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 use std::{env, str::FromStr, time::Duration};
 
 use anyhow::Context as _;
@@ -69,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .await?;
                 info!(mode = mode.as_str(), guild_id, "registered guild commands");
-                match channel_status::apply_due_auto_ends(&database, guild_id as i64).await {
+                match channel_status::apply_missed_auto_ends(&database, guild_id as i64).await {
                     Ok(count) if count > 0 => {
                         info!(guild_id, count, "applied missed automatic attendance ends");
                     }
@@ -77,6 +79,11 @@ async fn main() -> anyhow::Result<()> {
                     Err(error) => {
                         tracing::error!(%error, guild_id, "failed to apply missed automatic attendance ends");
                     }
+                }
+                if let Err(error) =
+                    channel_status::refresh_activity(ctx, &database, guild_id as i64).await
+                {
+                    tracing::warn!(%error, guild_id, "failed to refresh activity after startup recovery");
                 }
                 channel_status::spawn_auto_end_scheduler(
                     ctx,

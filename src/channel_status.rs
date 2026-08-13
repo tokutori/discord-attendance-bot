@@ -13,6 +13,7 @@ use crate::{
 
 const TOPIC_REFRESH_INTERVAL: Duration = Duration::from_secs(600);
 const AUTO_END_RETRY_DELAY: Duration = Duration::from_secs(60);
+const STARTUP_RETRY_INITIAL_DELAY: Duration = Duration::from_secs(1);
 static STATUS_REFRESH_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 fn status_refresh_lock() -> &'static tokio::sync::Mutex<()> {
@@ -44,19 +45,37 @@ pub async fn apply_due_auto_ends(pool: &SqlitePool, guild_id: i64) -> anyhow::Re
     Ok(notices.len())
 }
 
+/// Applies every automatic end that is due at the current instant.
+///
+/// This is the startup recovery boundary: the caller must not expose the bot
+/// as ready until this returns successfully. A database outage therefore
+/// delays readiness instead of leaving active records unprocessed until the
+/// next midnight. The delay is capped so a long outage does not create a hot
+/// retry loop.
+pub async fn apply_missed_auto_ends(pool: &SqlitePool, guild_id: i64) -> anyhow::Result<usize> {
+    let mut delay = STARTUP_RETRY_INITIAL_DELAY;
+    loop {
+        match apply_due_auto_ends(pool, guild_id).await {
+            Ok(count) => return Ok(count),
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    guild_id,
+                    retry_seconds = delay.as_secs(),
+                    "startup automatic-end recovery failed; retrying before readiness"
+                );
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(AUTO_END_RETRY_DELAY);
+            }
+        }
+    }
+}
+
 fn is_sqlite_busy(error: &sqlx::Error) -> bool {
     let sqlx::Error::Database(database_error) = error else {
         return false;
     };
     matches!(database_error.code().as_deref(), Some("5" | "6" | "517"))
-        || database_error
-            .message()
-            .to_ascii_lowercase()
-            .contains("busy")
-        || database_error
-            .message()
-            .to_ascii_lowercase()
-            .contains("locked")
 }
 
 async fn load_active_sessions(
@@ -169,7 +188,7 @@ pub fn spawn_auto_end_scheduler(ctx: &serenity::Context, pool: SqlitePool, guild
             };
             tokio::time::sleep(Duration::from_secs(seconds_until_midnight)).await;
             let count = loop {
-                match apply_due_auto_ends(&pool, guild_id).await {
+                match apply_missed_auto_ends(&pool, guild_id).await {
                     Ok(count) => break count,
                     Err(error) => {
                         tracing::error!(%error, guild_id, "failed midnight automatic attendance end");
@@ -182,15 +201,15 @@ pub fn spawn_auto_end_scheduler(ctx: &serenity::Context, pool: SqlitePool, guild
                     }
                 }
             };
-            if count > 0 {
-                tracing::info!(
-                    guild_id,
-                    count,
-                    "completed midnight automatic attendance end"
-                );
-                if let Err(error) = refresh_activity(&ctx, &pool, guild_id).await {
-                    tracing::warn!(%error, guild_id, "failed to refresh activity after automatic end");
-                }
+            tracing::info!(
+                guild_id,
+                count,
+                "completed midnight automatic attendance end"
+            );
+            // Refresh even when no row was closed: this also clears an old
+            // Discord activity after an external/manual state correction.
+            if let Err(error) = refresh_activity(&ctx, &pool, guild_id).await {
+                tracing::warn!(%error, guild_id, "failed to refresh activity after automatic end");
             }
         }
     });

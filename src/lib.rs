@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 pub mod attendance;
 pub mod attendance_export;
 pub mod channel_status;

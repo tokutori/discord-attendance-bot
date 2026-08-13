@@ -110,7 +110,7 @@ async fn end_impl(ctx: Context<'_>, at: Option<String>, note: Option<String>) ->
         EndOutcome::Ended(session) => format!(
             "活動を終了した。\n開始時刻: {}\n終了時刻: {}\n活動時間: {}\n記録ID: #{}",
             format_datetime(session.started_at),
-            format_datetime(session.ended_at.unwrap()),
+            format_datetime(session.completed_end()?),
             format_duration(session.duration_seconds_at(now)),
             session.id
         ),
@@ -121,14 +121,14 @@ async fn end_impl(ctx: Context<'_>, at: Option<String>, note: Option<String>) ->
             "活動を終了した。\n自動終了（{}）を取り消し、入力された終了時刻を正として扱った。\n開始時刻: {}\n終了時刻: {}\n活動時間: {}\n記録ID: #{}",
             format_datetime(automatic_end),
             format_datetime(session.started_at),
-            format_datetime(session.ended_at.unwrap()),
+            format_datetime(session.completed_end()?),
             format_duration(session.duration_seconds_at(now)),
             session.id
         ),
         EndOutcome::AlreadyInactive(Some(session)) => format!(
             "現在、活動中の記録はない。\n\n直近の活動:\n{} ～ {}\n活動時間: {}\n記録ID: #{}",
             format_datetime(session.started_at),
-            format_datetime(session.ended_at.unwrap()),
+            format_datetime(session.completed_end()?),
             format_duration(session.duration_seconds_at(now)),
             session.id
         ),

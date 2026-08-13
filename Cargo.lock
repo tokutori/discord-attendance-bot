@@ -135,56 +135,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
-name = "azul-core"
-version = "0.0.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "469d0a85e428ad578b51edbeb6577d379395e1ea6eea8959b61eec6e80bc3aad"
-dependencies = [
- "azul-css",
- "gl-context-loader",
- "libm",
- "rust-fontconfig",
-]
-
-[[package]]
-name = "azul-css"
-version = "0.0.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b328c57926ea9aae5bdc2aae2923f6b1771a2ad1904e613b6886135505533c8b"
-dependencies = [
- "azul-simplecss",
- "libm",
-]
-
-[[package]]
-name = "azul-layout"
-version = "0.0.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fccff6f166dca1b1b328f4fc9eac193c1416cf5198d8117f188218a9d89c8ddf"
-dependencies = [
- "allsorts-azul",
- "azul-core",
- "azul-css",
- "base64",
- "lru",
- "rust-fontconfig",
- "serde",
- "smallvec",
- "taffy",
- "thiserror 2.0.20",
- "tinyvec",
- "unicode-bidi",
- "unicode-normalization",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "azul-simplecss"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8259ebd5ee48a37fd8931116405456fd67efbb5435b4789e45bdbccf5d7dea7e"
-
-[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -929,12 +879,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gl-context-loader"
-version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ca63cb2488b847c12d1ca56034ba0f15613972c0dc0f8a957f525707567b23d"
-
-[[package]]
 name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -945,12 +889,6 @@ name = "glyph-names"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3531d702d6c1a3ba92a5fb55a404c7b8c476c8e7ca249951077afcbe4bc807f"
-
-[[package]]
-name = "grid"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b40ca9252762c466af32d0b1002e91e4e1bc5398f77455e55474deb466355ff5"
 
 [[package]]
 name = "hashbrown"
@@ -1410,12 +1348,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lru"
-version = "0.16.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
-
-[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1500,16 +1432,6 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "mmapio"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0204e2cac68f5b2e35b7ec8cb5d906f6e58e78dad8066a30b6ee54da99bb03dd"
-dependencies = [
- "libc",
- "winapi",
 ]
 
 [[package]]
@@ -1841,14 +1763,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a379adaffd3cd62de1bbbee11ae8f15a7fffcd595a6c58964fcc2e1f98ce9979"
 dependencies = [
  "allsorts-azul",
- "azul-core",
- "azul-css",
- "azul-layout",
  "base64",
  "flate2",
  "getrandom 0.4.3",
  "lopdf",
- "rust-fontconfig",
  "serde",
  "serde_derive",
  "serde_json",
@@ -2062,17 +1980,6 @@ dependencies = [
  "spki",
  "subtle",
  "zeroize",
-]
-
-[[package]]
-name = "rust-fontconfig"
-version = "4.4.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87542166cd2a7b38cf2c338384d882656e2fbbdd9813017415f1d57ad35757e9"
-dependencies = [
- "allsorts-azul",
- "mmapio",
- "xmlparser",
 ]
 
 [[package]]
@@ -2402,15 +2309,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
-name = "slotmap"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bdd58c3c93c3d278ca835519292445cb4b0d4dc59ccfdf7ceadaab3f8aeb4038"
-dependencies = [
- "version_check",
-]
-
-[[package]]
 name = "smallvec"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2722,18 +2620,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "taffy"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aea22054047c16c3f34d3ac473a2170be1424b1115b2a3adcf28cfb067c88859"
-dependencies = [
- "arrayvec",
- "grid",
- "serde",
- "slotmap",
 ]
 
 [[package]]
@@ -3178,12 +3064,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7df058c713841ad818f1dc5d3fd88063241cc61f49f5fbea4b951e8cf5a8d71d"
 
 [[package]]
-name = "unicode-segmentation"
-version = "1.13.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
-
-[[package]]
 name = "url"
 version = "2.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3352,22 +3232,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "winapi"
-version = "0.3.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419"
-dependencies = [
- "winapi-i686-pc-windows-gnu",
- "winapi-x86_64-pc-windows-gnu",
-]
-
-[[package]]
-name = "winapi-i686-pc-windows-gnu"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
-
-[[package]]
 name = "winapi-util"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3375,12 +3239,6 @@ checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "winapi-x86_64-pc-windows-gnu"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "windows-core"
@@ -3521,12 +3379,6 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
-
-[[package]]
-name = "xmlparser"
-version = "0.13.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
 
 [[package]]
 name = "yansi"

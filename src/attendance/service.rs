@@ -37,6 +37,8 @@ pub enum ServiceError {
     OverlappingSession,
     #[error("未来の時刻は指定できない")]
     FutureTime,
+    #[error("活動記録の内部状態が不正である: {0}")]
+    Invariant(&'static str),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
@@ -62,17 +64,26 @@ pub async fn start(
         Ok(id) => Ok(StartOutcome::Started(
             repository::get_owned(pool, id, guild_id, user_id)
                 .await?
-                .expect("inserted row"),
+                .ok_or(ServiceError::Invariant(
+                    "inserted session could not be read back",
+                ))?,
         )),
-        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+        Err(repository::SessionMutationError::Database(e))
+            if e.as_database_error()
+                .is_some_and(|database_error| database_error.is_unique_violation()) =>
+        {
             Ok(StartOutcome::AlreadyActive(
                 repository::open_session(pool, guild_id, user_id)
                     .await?
                     .ok_or(ServiceError::OpenSessionConflict)?,
             ))
         }
-        Err(e) if is_overlap_error(&e) => Err(ServiceError::OverlappingSession),
-        Err(e) => Err(e.into()),
+        Err(repository::SessionMutationError::Overlapping) => Err(ServiceError::OverlappingSession),
+        Err(repository::SessionMutationError::Database(e)) => Err(e.into()),
+        Err(repository::SessionMutationError::EndBeforeStart) => Err(ServiceError::EndBeforeStart),
+        Err(repository::SessionMutationError::Invariant(message)) => {
+            Err(ServiceError::Invariant(message))
+        }
     }
 }
 
@@ -100,9 +111,12 @@ pub async fn end(
             Ok(EndOutcome::AlreadyInactive(latest))
         }
         Ok(repository::EndSessionResult::EndBeforeStart) => Err(ServiceError::EndBeforeStart),
-        Err(error) if is_overlap_error(&error) => Err(ServiceError::OverlappingSession),
-        Err(error) if is_end_before_start_error(&error) => Err(ServiceError::EndBeforeStart),
-        Err(error) => Err(error.into()),
+        Err(repository::SessionMutationError::Overlapping) => Err(ServiceError::OverlappingSession),
+        Err(repository::SessionMutationError::EndBeforeStart) => Err(ServiceError::EndBeforeStart),
+        Err(repository::SessionMutationError::Database(error)) => Err(error.into()),
+        Err(repository::SessionMutationError::Invariant(message)) => {
+            Err(ServiceError::Invariant(message))
+        }
     }
 }
 
@@ -118,36 +132,37 @@ pub async fn continue_activity(
     let Some(latest) = repository::latest_completed(pool, guild_id, user_id).await? else {
         return Ok(ContinueOutcome::NothingToContinue);
     };
-    let removed_end = latest.ended_at.expect("completed row");
+    let Some(removed_end) = latest.ended_at else {
+        return Ok(ContinueOutcome::NothingToContinue);
+    };
     match repository::reopen_session(pool, latest.id, guild_id, user_id, now).await {
         Ok(1) => Ok(ContinueOutcome::Continued {
             session: repository::get_owned(pool, latest.id, guild_id, user_id)
                 .await?
-                .expect("reopened row"),
+                .ok_or(ServiceError::Invariant(
+                    "reopened session could not be read back",
+                ))?,
             removed_end,
         }),
         Ok(_) => Ok(repository::open_session(pool, guild_id, user_id)
             .await?
             .map(ContinueOutcome::AlreadyActive)
             .unwrap_or(ContinueOutcome::NothingToContinue)),
-        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+        Err(repository::SessionMutationError::Database(e))
+            if e.as_database_error()
+                .is_some_and(|database_error| database_error.is_unique_violation()) =>
+        {
             Ok(ContinueOutcome::AlreadyActive(
                 repository::open_session(pool, guild_id, user_id)
                     .await?
                     .ok_or(ServiceError::OpenSessionConflict)?,
             ))
         }
-        Err(e) if is_overlap_error(&e) => Err(ServiceError::OverlappingSession),
-        Err(e) => Err(e.into()),
+        Err(repository::SessionMutationError::Overlapping) => Err(ServiceError::OverlappingSession),
+        Err(repository::SessionMutationError::Database(e)) => Err(e.into()),
+        Err(repository::SessionMutationError::EndBeforeStart) => Err(ServiceError::EndBeforeStart),
+        Err(repository::SessionMutationError::Invariant(message)) => {
+            Err(ServiceError::Invariant(message))
+        }
     }
-}
-
-fn is_overlap_error(error: &sqlx::Error) -> bool {
-    error
-        .to_string()
-        .contains("attendance session overlaps an existing session")
-}
-
-fn is_end_before_start_error(error: &sqlx::Error) -> bool {
-    error.to_string().contains("attendance end before start")
 }

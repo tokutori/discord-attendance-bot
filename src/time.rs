@@ -88,16 +88,24 @@ pub fn format_datetime(timestamp: i64) -> String {
         .unwrap_or_else(|| "不正な時刻".into())
 }
 
+/// Formats a persisted interval without panicking on an invalid timestamp.
 pub fn format_history_range(started_at: i64, ended_at: Option<i64>) -> String {
-    let start = DateTime::<Utc>::from_timestamp(started_at, 0)
-        .unwrap()
-        .with_timezone(&DISPLAY_TIMEZONE);
+    let Some(start) = DateTime::<Utc>::from_timestamp(started_at, 0)
+        .map(|value| value.with_timezone(&DISPLAY_TIMEZONE))
+    else {
+        return "不正な時刻".into();
+    };
     match ended_at {
         None => format!("{} ～ 現在", start.format("%Y/%m/%d %H:%M")),
         Some(end) => {
-            let end = DateTime::<Utc>::from_timestamp(end, 0)
-                .unwrap()
-                .with_timezone(&DISPLAY_TIMEZONE);
+            if end < started_at {
+                return "不正な時刻".into();
+            }
+            let Some(end) = DateTime::<Utc>::from_timestamp(end, 0)
+                .map(|value| value.with_timezone(&DISPLAY_TIMEZONE))
+            else {
+                return "不正な時刻".into();
+            };
             if start.date_naive() == end.date_naive() {
                 format!(
                     "{}\n{} ～ {}",
@@ -116,6 +124,16 @@ pub fn format_history_range(started_at: i64, ended_at: Option<i64>) -> String {
     }
 }
 
+/// Formats a duration as Japanese hours and minutes, clamping negative input.
+///
+/// # Examples
+///
+/// ```
+/// use discord_attendance_bot::time::format_duration;
+///
+/// assert_eq!(format_duration(3_720), "1時間02分");
+/// assert_eq!(format_duration(-1), "0分");
+/// ```
 pub fn format_duration(seconds: i64) -> String {
     let minutes = seconds.max(0) / 60;
     let hours = minutes / 60;
@@ -127,37 +145,75 @@ pub fn format_duration(seconds: i64) -> String {
     }
 }
 
+/// Returns the Unix timestamps of the local month start and following month start.
 pub fn month_bounds(ym: YearMonth) -> anyhow::Result<(i64, i64)> {
     let start_date = NaiveDate::from_ymd_opt(ym.year, ym.month, 1)
         .ok_or_else(|| anyhow::anyhow!("invalid year-month"))?;
     let (next_year, next_month) = if ym.month == 12 {
-        (ym.year + 1, 1)
+        (
+            ym.year
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("invalid next year"))?,
+            1,
+        )
     } else {
         (ym.year, ym.month + 1)
     };
     let end_date = NaiveDate::from_ymd_opt(next_year, next_month, 1)
         .ok_or_else(|| anyhow::anyhow!("invalid next month"))?;
     Ok((
-        local_to_timestamp(start_date.and_hms_opt(0, 0, 0).unwrap())?,
-        local_to_timestamp(end_date.and_hms_opt(0, 0, 0).unwrap())?,
+        local_to_timestamp(
+            start_date
+                .and_hms_opt(0, 0, 0)
+                .ok_or_else(|| anyhow::anyhow!("invalid month start"))?,
+        )?,
+        local_to_timestamp(
+            end_date
+                .and_hms_opt(0, 0, 0)
+                .ok_or_else(|| anyhow::anyhow!("invalid month end"))?,
+        )?,
     ))
 }
 
+/// Computes the next midnight in the display timezone.
 pub fn next_midnight_timestamp(now: DateTime<Utc>) -> anyhow::Result<i64> {
     let local_date = now.with_timezone(&DISPLAY_TIMEZONE).date_naive();
     let next_date = local_date
         .succ_opt()
         .ok_or_else(|| anyhow::anyhow!("could not calculate next local date"))?;
-    local_to_timestamp(next_date.and_hms_opt(0, 0, 0).unwrap()).map_err(Into::into)
+    let next_midnight = next_date
+        .and_hms_opt(0, 0, 0)
+        .ok_or_else(|| anyhow::anyhow!("invalid next midnight"))?;
+    local_to_timestamp(next_midnight).map_err(Into::into)
 }
 
+/// Computes the configured 21:00 automatic end for an older active period.
+///
+/// # Examples
+///
+/// ```
+/// use discord_attendance_bot::time::{auto_end_timestamp, DISPLAY_TIMEZONE};
+///
+/// use chrono::{TimeZone, Utc};
+///
+/// let started = DISPLAY_TIMEZONE
+///     .with_ymd_and_hms(2026, 8, 8, 18, 0, 0)
+///     .single()
+///     .expect("fixed test date")
+///     .timestamp();
+/// let after_midnight = Utc
+///     .with_ymd_and_hms(2026, 8, 8, 15, 0, 1)
+///     .single()
+///     .expect("fixed test date");
+/// assert_eq!(auto_end_timestamp(started, after_midnight), Some(started + 3 * 3600));
+/// ```
 pub fn auto_end_timestamp(started_at: i64, now: DateTime<Utc>) -> Option<i64> {
     let started = DateTime::<Utc>::from_timestamp(started_at, 0)?.with_timezone(&DISPLAY_TIMEZONE);
     let local_now = now.with_timezone(&DISPLAY_TIMEZONE);
     if started.date_naive() >= local_now.date_naive() {
         return None;
     }
-    let cutoff_time = NaiveTime::from_hms_opt(21, 0, 0).unwrap();
+    let cutoff_time = NaiveTime::from_hms_opt(21, 0, 0)?;
     let cutoff_date = if started.time() < cutoff_time {
         started.date_naive()
     } else {

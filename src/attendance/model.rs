@@ -1,6 +1,21 @@
 use chrono::NaiveDate;
 use sqlx::FromRow;
+use thiserror::Error;
 
+#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
+/// A database row whose nullable state fields do not match the requested operation.
+pub enum SessionStateError {
+    #[error("活動記録が終了済み状態ではない")]
+    NotCompleted,
+    #[error("活動記録が活動中状態ではない")]
+    NotActive,
+}
+
+/// A persisted attendance period.
+///
+/// The database invariant is that `ended_at` and `open_since` are mutually
+/// exclusive: completed rows have only `ended_at`, while active rows have only
+/// `open_since`. Use the checked accessors when a caller requires one state.
 #[derive(Debug, Clone, FromRow)]
 pub struct AttendanceSession {
     pub id: i64,
@@ -17,6 +32,16 @@ pub struct AttendanceSession {
 }
 
 impl AttendanceSession {
+    /// Returns the end timestamp, rejecting an active row instead of guessing.
+    pub fn completed_end(&self) -> Result<i64, SessionStateError> {
+        self.ended_at.ok_or(SessionStateError::NotCompleted)
+    }
+
+    /// Returns the timestamp from which the current active period began.
+    pub fn active_since(&self) -> Result<i64, SessionStateError> {
+        self.open_since.ok_or(SessionStateError::NotActive)
+    }
+
     pub fn duration_seconds_at(&self, now: i64) -> i64 {
         self.ended_at
             .unwrap_or(now)

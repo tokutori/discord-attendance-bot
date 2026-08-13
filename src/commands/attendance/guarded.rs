@@ -70,7 +70,7 @@ pub async fn revert(ctx: Context<'_>) -> Result<(), Error> {
         guild_id,
         user_id,
         repository::ConfirmationInput {
-            action: "revert",
+            action: repository::ConfirmationAction::Revert,
             session_id: preview.session_id,
             change_id: Some(preview.change_id),
             expected: &expected,
@@ -165,7 +165,7 @@ pub async fn edit(
         guild_id,
         user_id,
         repository::ConfirmationInput {
-            action: "edit",
+            action: repository::ConfirmationAction::Edit,
             session_id: record,
             change_id: None,
             expected: &expected,
@@ -208,7 +208,7 @@ pub async fn delete(
         guild_id,
         user_id,
         repository::ConfirmationInput {
-            action: "delete",
+            action: repository::ConfirmationAction::Delete,
             session_id: record,
             change_id: None,
             expected: &expected,
@@ -261,21 +261,20 @@ pub async fn confirm(
             action,
             session_id,
             operation,
-        } => match action.as_str() {
-            "edit" => format!(
+        } => match action {
+            repository::ConfirmationAction::Edit => format!(
                 "edit を確定した。\n\n記録 #{} をプレビューどおり修正した。",
                 session_id
             ),
-            "delete" => format!(
+            repository::ConfirmationAction::Delete => format!(
                 "delete を確定した。\n\n記録 #{} を soft delete した。通常の履歴・集計から除外される。",
                 session_id
             ),
-            "revert" => format!(
+            repository::ConfirmationAction::Revert => format!(
                 "revert を確定した。\n\n直前の {} 操作を取り消し、記録 #{} をプレビューどおり復元した。",
                 operation.unwrap_or_else(|| "変更".into()),
                 session_id
             ),
-            _ => "確認した操作を確定した。".into(),
         },
         repository::ConfirmationResult::NotFound => {
             "確認IDが存在しないか、すでに使用済みである。プレビューからやり直してほしい。".into()

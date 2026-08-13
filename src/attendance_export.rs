@@ -107,7 +107,11 @@ pub fn build_monthly_export(
     let first_date = NaiveDate::from_ymd_opt(year_month.year, year_month.month, 1)
         .ok_or_else(|| anyhow::anyhow!("invalid export month"))?;
     let next_date = if year_month.month == 12 {
-        NaiveDate::from_ymd_opt(year_month.year + 1, 1, 1)
+        let next_year = year_month
+            .year
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("invalid next export year"))?;
+        NaiveDate::from_ymd_opt(next_year, 1, 1)
     } else {
         NaiveDate::from_ymd_opt(year_month.year, year_month.month + 1, 1)
     }
@@ -165,15 +169,20 @@ pub fn build_monthly_export(
             if day_index >= day_count {
                 break;
             }
+            let next_midnight_local = date
+                .checked_add_signed(Duration::days(1))
+                .ok_or_else(|| anyhow::anyhow!("invalid next calendar date"))?
+                .and_hms_opt(0, 0, 0)
+                .ok_or_else(|| anyhow::anyhow!("invalid local midnight"))?;
             let next_midnight = time::DISPLAY_TIMEZONE
-                .from_local_datetime(&(date + Duration::days(1)).and_hms_opt(0, 0, 0).unwrap())
+                .from_local_datetime(&next_midnight_local)
                 .single()
                 .ok_or_else(|| anyhow::anyhow!("invalid local midnight"))?
                 .timestamp();
             let segment_end = effective_end.min(next_midnight);
-            let seconds = segment_end - cursor;
-            row.daily_seconds[day_index] += seconds;
-            row.total_seconds += seconds;
+            let seconds = segment_end.saturating_sub(cursor);
+            row.daily_seconds[day_index] = row.daily_seconds[day_index].saturating_add(seconds);
+            row.total_seconds = row.total_seconds.saturating_add(seconds);
             cursor = segment_end;
         }
     }
@@ -616,6 +625,10 @@ mod tests {
         };
         let pdf = to_pdf(&export, IdentityMode::WithDiscordName).unwrap();
         assert!(pdf.starts_with(b"%PDF-"));
-        assert!(pdf.len() < 5_000_000);
+        // Font embedding size is platform-dependent (Windows often selects a
+        // multi-megabyte CJK font). Validate the PDF boundary instead of using
+        // a host-specific byte limit; the send path handles Discord's actual
+        // attachment limit and reports an actionable error.
+        assert!(pdf.windows(b"%%EOF".len()).any(|window| window == b"%%EOF"));
     }
 }

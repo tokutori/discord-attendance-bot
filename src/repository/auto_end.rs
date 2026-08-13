@@ -57,7 +57,8 @@ pub async fn apply_due_auto_ends(
     guild_id: i64,
     now: i64,
 ) -> Result<Vec<AutoEndNotice>, sqlx::Error> {
-    let now_utc = DateTime::<Utc>::from_timestamp(now, 0).unwrap_or_else(Utc::now);
+    let now_utc = DateTime::<Utc>::from_timestamp(now, 0)
+        .ok_or_else(|| sqlx::Error::Protocol("invalid auto-end timestamp".into()))?;
     let mut tx = begin_immediate(pool).await?;
     let sessions = sqlx::query_as::<_, AttendanceSession>(
         "SELECT * FROM attendance_sessions
@@ -173,7 +174,7 @@ pub async fn correct_auto_ended_session(
     ended_at: i64,
     note: Option<&str>,
     now: i64,
-) -> Result<Option<AutoEndCorrection>, sqlx::Error> {
+) -> Result<Option<AutoEndCorrection>, super::SessionMutationError> {
     let mut tx = begin_immediate(pool).await?;
     let result =
         correct_auto_ended_session_in_tx(&mut tx, Some(id), guild_id, user_id, ended_at, note, now)
@@ -192,7 +193,7 @@ pub(super) async fn correct_auto_ended_session_in_tx(
     ended_at: i64,
     note: Option<&str>,
     now: i64,
-) -> Result<Option<AutoEndCorrection>, sqlx::Error> {
+) -> Result<Option<AutoEndCorrection>, super::SessionMutationError> {
     let Some(event) = sqlx::query_as::<_, AutoEndEventIdentity>(
         "SELECT a.id, a.automatic_ended_at FROM attendance_auto_end_events a
          WHERE (? IS NULL OR a.session_id = ?) AND a.guild_id = ? AND a.user_id = ?
@@ -230,7 +231,7 @@ pub(super) async fn correct_auto_ended_session_in_tx(
         return Ok(None);
     };
     if ended_at < existing.started_at {
-        return Err(sqlx::Error::Protocol("attendance end before start".into()));
+        return Err(super::SessionMutationError::EndBeforeStart);
     }
     let after = SnapshotRow {
         started_at: existing.started_at,
@@ -274,7 +275,7 @@ pub(super) async fn correct_auto_ended_session_in_tx(
             guild_id,
             user_id,
             session_id: existing.id,
-            kind: "end",
+            kind: super::ChangeOperation::End,
             before: Some(&snapshot(&existing)),
             after: &after,
             created_at: now,

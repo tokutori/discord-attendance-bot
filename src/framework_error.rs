@@ -1,31 +1,67 @@
 use poise::serenity_prelude as serenity;
+use sqlx::Error as SqlxError;
 
-use crate::{Data, presentation};
+use crate::{
+    Data,
+    attendance::ServiceError,
+    presentation,
+    text::NameReadingError,
+    time::{ParseTimeError, ParseYearMonthError},
+};
 
 fn explain_command_error(error: &anyhow::Error) -> (&'static str, String) {
+    if let Some(error) = error.downcast_ref::<ServiceError>() {
+        return match error {
+            ServiceError::EndBeforeStart | ServiceError::FutureTime => (
+                "入力形式エラー",
+                format!("原因: {error}\n時刻を確認して再試行してほしい。"),
+            ),
+            ServiceError::OpenSessionConflict | ServiceError::OverlappingSession => (
+                "活動記録の競合",
+                format!(
+                    "原因: {error}\n既存の活動記録を確認し、必要なら `edit` または `revert` で時刻を修正してほしい。"
+                ),
+            ),
+            ServiceError::Invariant(_) => (
+                "内部状態エラー",
+                "活動記録の内部状態を確認できなかった。管理者に連絡してほしい。".into(),
+            ),
+            ServiceError::Database(_) => (
+                "データベースエラー",
+                "原因: 活動記録データベースの読み書きに失敗した。時間を置いて再試行してほしい。繰り返す場合は管理者に連絡してほしい。".into(),
+            ),
+        };
+    }
+    if let Some(error) = error.downcast_ref::<ParseTimeError>() {
+        return (
+            "入力形式エラー",
+            format!("原因: {error}\nコマンドのヘルプに記載された形式で入力してほしい。"),
+        );
+    }
+    if let Some(error) = error.downcast_ref::<ParseYearMonthError>() {
+        return (
+            "入力形式エラー",
+            format!("原因: {error}\n対象月は `YYYY-MM` 形式で指定してほしい。例: `2026-08`。"),
+        );
+    }
+    if let Some(error) = error.downcast_ref::<NameReadingError>() {
+        return (
+            "入力形式エラー",
+            format!("原因: {error}\n名前の読みを確認して再試行してほしい。"),
+        );
+    }
+    if error.downcast_ref::<SqlxError>().is_some() {
+        return (
+            "データベースエラー",
+            "原因: 活動記録データベースの読み書きに失敗した。時間を置いて再試行してほしい。繰り返す場合は管理者に連絡してほしい。".into(),
+        );
+    }
+
+    // Discord/HTTP libraries expose transport failures as external error
+    // types. Their stable typed variants differ by library version, so retain
+    // a narrow fallback for those boundary messages only.
     let message = error.to_string();
     let lowercase = message.to_ascii_lowercase();
-    if message.contains("年月は") || message.contains("月は1から12") {
-        return (
-            "入力形式エラー",
-            format!("原因: {message}\n対象月は `YYYY-MM` 形式で指定してほしい。例: `2026-08`。"),
-        );
-    }
-    if message.contains("時刻は") || message.contains("日時は") {
-        return (
-            "入力形式エラー",
-            format!("原因: {message}\nコマンドのヘルプに記載された形式で入力してほしい。"),
-        );
-    }
-    if message.contains("重複している") || message.contains("複数作ることはできない")
-    {
-        return (
-            "活動記録の競合",
-            format!(
-                "原因: {message}\n既存の活動記録を確認し、必要なら `edit` または `revert` で時刻を修正してほしい。"
-            ),
-        );
-    }
     if lowercase.contains("request entity too large") || lowercase.contains("payload too large") {
         return (
             "添付ファイルが大きすぎる",
@@ -207,7 +243,7 @@ mod tests {
     #[test]
     fn classifies_expected_command_errors() {
         assert_eq!(
-            explain_command_error(&anyhow::anyhow!("年月は YYYY-MM 形式で指定する必要がある")).0,
+            explain_command_error(&anyhow::Error::new(ParseYearMonthError::InvalidFormat)).0,
             "入力形式エラー"
         );
         assert_eq!(
@@ -215,7 +251,7 @@ mod tests {
             "添付ファイルが大きすぎる"
         );
         assert_eq!(
-            explain_command_error(&anyhow::anyhow!("活動記録の時間帯が別の記録と重複している")).0,
+            explain_command_error(&anyhow::Error::new(ServiceError::OverlappingSession)).0,
             "活動記録の競合"
         );
     }

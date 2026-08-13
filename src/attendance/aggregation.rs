@@ -7,6 +7,19 @@ use crate::{
     time::{DISPLAY_TIMEZONE, month_bounds},
 };
 
+/// Returns the non-negative overlap between a session and a half-open range.
+///
+/// The calculation saturates at zero for disjoint or reversed ranges, so a
+/// malformed persisted interval cannot create negative attendance totals.
+///
+/// # Examples
+///
+/// ```
+/// use discord_attendance_bot::attendance::overlap_seconds;
+///
+/// assert_eq!(overlap_seconds(90, 120, 0, 100), 10);
+/// assert_eq!(overlap_seconds(10, 20, 30, 40), 0);
+/// ```
 pub fn overlap_seconds(started_at: i64, ended_at: i64, range_start: i64, range_end: i64) -> i64 {
     ended_at
         .min(range_end)
@@ -14,6 +27,10 @@ pub fn overlap_seconds(started_at: i64, ended_at: i64, range_start: i64, range_e
         .max(0)
 }
 
+/// Aggregates completed sessions into calendar-day totals for one local month.
+///
+/// Active sessions are intentionally excluded; callers that need a live
+/// preview must provide a completed snapshot first.
 pub fn aggregate_monthly(
     sessions: &[AttendanceSession],
     year_month: YearMonth,
@@ -21,7 +38,7 @@ pub fn aggregate_monthly(
 ) -> anyhow::Result<MonthlyAttendance> {
     let (month_start, month_end) = month_bounds(year_month)?;
     let mut daily: BTreeMap<chrono::NaiveDate, i64> = BTreeMap::new();
-    let mut total = 0;
+    let mut total: i64 = 0;
     let mut count = 0;
 
     for session in sessions {
@@ -34,22 +51,29 @@ pub fn aggregate_monthly(
             continue;
         }
         count += 1;
-        total += clipped_end - clipped_start;
+        total = total.saturating_add(clipped_end.saturating_sub(clipped_start));
 
         let mut cursor = clipped_start;
         while cursor < clipped_end {
             let cursor_dt = DateTime::<Utc>::from_timestamp(cursor, 0)
-                .unwrap()
+                .ok_or_else(|| anyhow::anyhow!("invalid session timestamp"))?
                 .with_timezone(&DISPLAY_TIMEZONE);
             let date = cursor_dt.date_naive();
-            let next_date = date + Duration::days(1);
+            let next_date = date
+                .checked_add_signed(Duration::days(1))
+                .ok_or_else(|| anyhow::anyhow!("invalid next calendar date"))?;
+            let next_midnight_local = next_date
+                .and_hms_opt(0, 0, 0)
+                .ok_or_else(|| anyhow::anyhow!("invalid local midnight"))?;
             let next_midnight = DISPLAY_TIMEZONE
-                .from_local_datetime(&next_date.and_hms_opt(0, 0, 0).unwrap())
+                .from_local_datetime(&next_midnight_local)
                 .single()
-                .unwrap()
+                .ok_or_else(|| anyhow::anyhow!("invalid local midnight"))?
                 .timestamp();
             let segment_end = clipped_end.min(next_midnight);
-            *daily.entry(date).or_default() += segment_end - cursor;
+            let segment_seconds = segment_end.saturating_sub(cursor);
+            let daily_total = daily.entry(date).or_default();
+            *daily_total = daily_total.saturating_add(segment_seconds);
             cursor = segment_end;
         }
     }
@@ -57,7 +81,11 @@ pub fn aggregate_monthly(
     let first_date = NaiveDate::from_ymd_opt(year_month.year, year_month.month, 1)
         .ok_or_else(|| anyhow::anyhow!("invalid aggregation month"))?;
     let next_date = if year_month.month == 12 {
-        NaiveDate::from_ymd_opt(year_month.year + 1, 1, 1)
+        let next_year = year_month
+            .year
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("invalid next aggregation year"))?;
+        NaiveDate::from_ymd_opt(next_year, 1, 1)
     } else {
         NaiveDate::from_ymd_opt(year_month.year, year_month.month + 1, 1)
     }

@@ -2,12 +2,13 @@ use sqlx::{FromRow, Sqlite, SqlitePool, Transaction};
 
 use crate::attendance::AttendanceSession;
 
-use super::{RevertPreview, RevertPreviewResult, SnapshotRow};
+use super::{ChangeOperation, RevertPreview, RevertPreviewResult, SnapshotRow};
 
 #[derive(Debug, FromRow)]
 pub(super) struct ChangeRow {
     pub(super) id: i64,
-    pub(super) operation: String,
+    #[sqlx(try_from = "String")]
+    pub(super) operation: ChangeOperation,
     pub(super) session_id: i64,
     pub(super) before_started_at: Option<i64>,
     pub(super) before_ended_at: Option<i64>,
@@ -25,7 +26,7 @@ pub(super) struct ChangeInput<'a> {
     pub(super) guild_id: i64,
     pub(super) user_id: i64,
     pub(super) session_id: i64,
-    pub(super) kind: &'a str,
+    pub(super) kind: ChangeOperation,
     pub(super) before: Option<&'a SnapshotRow>,
     pub(super) after: &'a SnapshotRow,
     pub(super) created_at: i64,
@@ -56,7 +57,7 @@ pub(super) async fn insert_change(
     .bind(input.guild_id)
     .bind(input.user_id)
     .bind(input.session_id)
-    .bind(input.kind)
+    .bind(input.kind.as_str())
     .bind(input.before.map(|value| value.started_at))
     .bind(input.before.and_then(|value| value.ended_at))
     .bind(input.before.and_then(|value| value.open_since))
@@ -119,7 +120,7 @@ pub async fn latest_revert_preview(
     }
     Ok(RevertPreviewResult::Available(Box::new(RevertPreview {
         change_id: change.id,
-        operation: change.operation,
+        operation: change.operation.to_string(),
         session_id: change.session_id,
         current,
         before_started_at: change.before_started_at,

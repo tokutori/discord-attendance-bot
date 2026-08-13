@@ -114,8 +114,13 @@ ActivityはDiscordの表示上限に合わせ、128文字を超える部分を�
 ```powershell
 cargo fmt --check
 cargo test
+cargo test --doc
 cargo clippy --all-targets --all-features -- -D warnings
+cargo doc --no-deps
+cargo audit --deny warnings
 ```
+
+同じ検査はGitHub ActionsでUbuntu・Windows・macOSの3環境に対して実行する。
 
 ## データベース
 

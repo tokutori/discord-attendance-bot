@@ -7,7 +7,7 @@ use std::{
 use sqlx::{FromRow, Sqlite, SqlitePool, Transaction};
 
 use super::{
-    ConfirmationInput, ConfirmationRequest, ConfirmationResult, SnapshotRow,
+    ConfirmationAction, ConfirmationInput, ConfirmationRequest, ConfirmationResult, SnapshotRow,
     auto_end::{mark_active_auto_end_corrected, restore_auto_end_for_snapshot},
     change::{ChangeInput, ChangeRow, insert_change, matches_after},
     session::has_session_overlap,
@@ -19,7 +19,8 @@ pub const CONFIRMATION_TTL_SECONDS: i64 = 5 * 60;
 #[derive(Debug, FromRow)]
 struct ConfirmationRow {
     id: i64,
-    action: String,
+    #[sqlx(try_from = "String")]
+    action: ConfirmationAction,
     session_id: i64,
     change_id: Option<i64>,
     expected_started_at: i64,
@@ -68,6 +69,7 @@ pub async fn create_confirmation(
     input: ConfirmationInput<'_>,
 ) -> Result<ConfirmationRequest, sqlx::Error> {
     let mut tx = begin_immediate(pool).await?;
+    let action = input.action;
     let expires_at = input.requested_at + CONFIRMATION_TTL_SECONDS;
     sqlx::query(
         "DELETE FROM pending_attendance_actions
@@ -86,7 +88,7 @@ pub async fn create_confirmation(
             guild_id,
             user_id,
             input.session_id,
-            input.action,
+            action.as_str(),
             input.requested_at,
             nonce,
             attempt,
@@ -102,7 +104,7 @@ pub async fn create_confirmation(
         .bind(guild_id)
         .bind(user_id)
         .bind(&code)
-        .bind(input.action)
+        .bind(action.as_str())
         .bind(input.session_id)
         .bind(input.change_id)
         .bind(input.expected.started_at)
@@ -122,7 +124,7 @@ pub async fn create_confirmation(
                 tx.commit().await?;
                 return Ok(ConfirmationRequest {
                     code,
-                    action: input.action.to_owned(),
+                    action,
                     session_id: input.session_id,
                     change_id: input.change_id,
                     target_started_at: input.target_started_at,
@@ -218,8 +220,8 @@ pub async fn confirm_confirmation(
     }
 
     let mut operation_name = None;
-    match confirmation.action.as_str() {
-        "edit" => {
+    match confirmation.action {
+        ConfirmationAction::Edit => {
             let Some(target_started_at) = confirmation.target_started_at else {
                 consume_confirmation(&mut tx, confirmation.id, now).await?;
                 tx.commit().await?;
@@ -230,7 +232,16 @@ pub async fn confirm_confirmation(
                 ended_at: confirmation.target_ended_at,
                 open_since: if confirmation.target_ended_at.is_none() {
                     if current.ended_at.is_none() {
-                        Some(current.open_since.unwrap_or(now).max(target_started_at))
+                        Some(
+                            current
+                                .open_since
+                                .ok_or_else(|| {
+                                    sqlx::Error::Protocol(
+                                        "active session is missing open_since".into(),
+                                    )
+                                })?
+                                .max(target_started_at),
+                        )
                     } else {
                         Some(now)
                     }
@@ -281,7 +292,7 @@ pub async fn confirm_confirmation(
                     guild_id,
                     user_id,
                     session_id: confirmation.session_id,
-                    kind: "edit",
+                    kind: super::ChangeOperation::Edit,
                     before: Some(&current),
                     after: &after,
                     created_at: now,
@@ -289,7 +300,7 @@ pub async fn confirm_confirmation(
             )
             .await?;
         }
-        "delete" => {
+        ConfirmationAction::Delete => {
             let after = SnapshotRow {
                 started_at: current.started_at,
                 ended_at: current.ended_at,
@@ -320,7 +331,7 @@ pub async fn confirm_confirmation(
                     guild_id,
                     user_id,
                     session_id: confirmation.session_id,
-                    kind: "delete",
+                    kind: super::ChangeOperation::Delete,
                     before: Some(&current),
                     after: &after,
                     created_at: now,
@@ -328,7 +339,7 @@ pub async fn confirm_confirmation(
             )
             .await?;
         }
-        "revert" => {
+        ConfirmationAction::Revert => {
             let Some(change_id) = confirmation.change_id else {
                 consume_confirmation(&mut tx, confirmation.id, now).await?;
                 tx.commit().await?;
@@ -363,7 +374,7 @@ pub async fn confirm_confirmation(
                 tx.commit().await?;
                 return Ok(ConfirmationResult::Conflict);
             }
-            let restored = if change.operation == "start" {
+            let restored = if change.operation == super::ChangeOperation::Start {
                 SnapshotRow {
                     started_at: current.started_at,
                     ended_at: current.ended_at,
@@ -400,7 +411,7 @@ pub async fn confirm_confirmation(
                 tx.commit().await?;
                 return Ok(ConfirmationResult::Conflict);
             }
-            let rows_affected = if change.operation == "start" {
+            let rows_affected = if change.operation == super::ChangeOperation::Start {
                 sqlx::query(
                     "UPDATE attendance_sessions SET deleted_at = ?, updated_at = ?
                      WHERE id = ? AND guild_id = ? AND user_id = ? AND deleted_at IS NULL",
@@ -443,12 +454,7 @@ pub async fn confirm_confirmation(
                 .bind(change.id)
                 .execute(&mut *tx)
                 .await?;
-            operation_name = Some(change.operation);
-        }
-        _ => {
-            consume_confirmation(&mut tx, confirmation.id, now).await?;
-            tx.commit().await?;
-            return Ok(ConfirmationResult::Conflict);
+            operation_name = Some(change.operation.to_string());
         }
     }
 

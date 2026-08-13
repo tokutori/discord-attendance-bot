@@ -45,7 +45,7 @@ async fn confirm_latest_revert(pool: &SqlitePool, now: i64) -> ConfirmationResul
         1,
         2,
         ConfirmationInput {
-            action: "revert",
+            action: ConfirmationAction::Revert,
             session_id: preview.session_id,
             change_id: Some(preview.change_id),
             expected: &preview.current,
@@ -84,7 +84,7 @@ async fn confirmed_reverts_walk_all_changes_in_reverse_order() {
         1,
         2,
         ConfirmationInput {
-            action: "edit",
+            action: ConfirmationAction::Edit,
             session_id: id,
             change_id: None,
             expected: &before_edit,
@@ -115,7 +115,7 @@ async fn confirmed_reverts_walk_all_changes_in_reverse_order() {
         1,
         2,
         ConfirmationInput {
-            action: "delete",
+            action: ConfirmationAction::Delete,
             session_id: id,
             change_id: None,
             expected: &before_delete,
@@ -144,7 +144,7 @@ async fn confirmed_reverts_walk_all_changes_in_reverse_order() {
         assert_eq!(
             confirm_latest_revert(&pool, now).await,
             ConfirmationResult::Confirmed {
-                action: "revert".into(),
+                action: ConfirmationAction::Revert,
                 session_id: id,
                 operation: Some(operation.into()),
             }
@@ -177,7 +177,7 @@ async fn stale_revert_confirmation_cannot_skip_a_newer_change() {
         1,
         2,
         ConfirmationInput {
-            action: "revert",
+            action: ConfirmationAction::Revert,
             session_id: preview.session_id,
             change_id: Some(preview.change_id),
             expected: &preview.current,
@@ -208,7 +208,7 @@ async fn stale_revert_confirmation_cannot_skip_a_newer_change() {
         1,
         2,
         ConfirmationInput {
-            action: "delete",
+            action: ConfirmationAction::Delete,
             session_id: second,
             change_id: None,
             expected: &second_snapshot,
@@ -267,7 +267,7 @@ async fn confirmation_is_preview_only_until_confirmed_and_single_use() {
         1,
         2,
         ConfirmationInput {
-            action: "edit",
+            action: ConfirmationAction::Edit,
             session_id: id,
             change_id: None,
             expected: &expected,
@@ -294,7 +294,7 @@ async fn confirmation_is_preview_only_until_confirmed_and_single_use() {
             .await
             .unwrap(),
         ConfirmationResult::Confirmed {
-            action: "edit".into(),
+            action: ConfirmationAction::Edit,
             session_id: id,
             operation: None,
         }
@@ -318,7 +318,7 @@ async fn confirmation_is_preview_only_until_confirmed_and_single_use() {
         1,
         2,
         ConfirmationInput {
-            action: "delete",
+            action: ConfirmationAction::Delete,
             session_id: id,
             change_id: None,
             expected: &expected,
@@ -335,7 +335,7 @@ async fn confirmation_is_preview_only_until_confirmed_and_single_use() {
             .await
             .unwrap(),
         ConfirmationResult::Confirmed {
-            action: "delete".into(),
+            action: ConfirmationAction::Delete,
             session_id: id,
             operation: None,
         }
@@ -344,7 +344,7 @@ async fn confirmation_is_preview_only_until_confirmed_and_single_use() {
     assert_eq!(
         confirm_latest_revert(&pool, 400).await,
         ConfirmationResult::Confirmed {
-            action: "revert".into(),
+            action: ConfirmationAction::Revert,
             session_id: id,
             operation: Some("delete".into()),
         }
@@ -403,6 +403,62 @@ async fn auto_end_runs_after_midnight_and_user_end_corrects_it() {
             if session.ended_at == Some(manual_end)
     ));
     assert!(latest_auto_ended(&pool, 1, 2).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn startup_recovery_applies_auto_end_after_multiple_midnights() {
+    let pool = test_pool().await;
+    let start = crate::time::DISPLAY_TIMEZONE
+        .with_ymd_and_hms(2026, 8, 8, 18, 0, 0)
+        .unwrap()
+        .timestamp();
+    let recovery_time = crate::time::DISPLAY_TIMEZONE
+        .with_ymd_and_hms(2026, 8, 12, 12, 0, 0)
+        .unwrap()
+        .timestamp();
+    let id = insert_session(&pool, 1, 2, "Bem", start, None, start)
+        .await
+        .unwrap();
+
+    // A bot that was down for several days still closes the stale open row at
+    // the first startup after the outage; it does not wait for another midnight.
+    let notices = apply_due_auto_ends(&pool, 1, recovery_time).await.unwrap();
+    assert_eq!(notices.len(), 1);
+    assert_eq!(
+        get_owned(&pool, id, 1, 2).await.unwrap().unwrap().ended_at,
+        Some(
+            crate::time::DISPLAY_TIMEZONE
+                .with_ymd_and_hms(2026, 8, 8, 21, 0, 0)
+                .unwrap()
+                .timestamp()
+        )
+    );
+    assert!(
+        apply_due_auto_ends(&pool, 1, recovery_time)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn session_mutations_reject_end_before_start_without_database_string_matching() {
+    let pool = test_pool().await;
+    let id = insert_session(&pool, 1, 2, "Bem", 100, None, 100)
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        close_session(&pool, id, 1, 2, 99, None, 100).await,
+        Err(SessionMutationError::EndBeforeStart)
+    ));
+    close_session(&pool, id, 1, 2, 200, None, 200)
+        .await
+        .unwrap();
+    assert!(matches!(
+        reopen_session(&pool, id, 1, 2, 99).await,
+        Err(SessionMutationError::EndBeforeStart)
+    ));
 }
 
 #[tokio::test]
@@ -627,7 +683,7 @@ async fn confirm_open_transition_conflicts_with_newer_open_session() {
         1,
         2,
         ConfirmationInput {
-            action: "edit",
+            action: ConfirmationAction::Edit,
             session_id: first,
             change_id: None,
             expected: &expected,
@@ -675,7 +731,7 @@ async fn concurrent_confirm_is_single_use_on_wal_pool() {
         1,
         2,
         ConfirmationInput {
-            action: "edit",
+            action: ConfirmationAction::Edit,
             session_id: id,
             change_id: None,
             expected: &expected,
@@ -762,7 +818,7 @@ async fn overlapping_completed_edit_is_consumed_as_conflict() {
         1,
         2,
         ConfirmationInput {
-            action: "edit",
+            action: ConfirmationAction::Edit,
             session_id: second,
             change_id: None,
             expected: &expected,
@@ -807,7 +863,7 @@ async fn confirmation_is_owner_scoped_and_consumed_at_expiry_boundary() {
         1,
         2,
         ConfirmationInput {
-            action: "delete",
+            action: ConfirmationAction::Delete,
             session_id: id,
             change_id: None,
             expected: &expected,

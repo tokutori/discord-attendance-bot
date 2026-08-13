@@ -3,7 +3,7 @@ use sqlx::{Sqlite, SqlitePool, Transaction};
 use crate::attendance::AttendanceSession;
 
 use super::{
-    ActiveAttendanceMember, EndSessionResult, SnapshotRow,
+    ActiveAttendanceMember, ChangeOperation, EndSessionResult, SnapshotRow,
     auto_end::{correct_auto_ended_session_in_tx, mark_active_auto_end_corrected},
     change::{ChangeInput, insert_change, snapshot},
     transaction::begin_immediate,
@@ -87,10 +87,14 @@ pub async fn insert_session(
     started_at: i64,
     note: Option<&str>,
     now: i64,
-) -> Result<i64, sqlx::Error> {
+) -> Result<i64, super::SessionMutationError> {
     let mut tx = begin_immediate(pool).await?;
+    if has_session_overlap(&mut tx, guild_id, user_id, -1, started_at, None).await? {
+        return Err(super::SessionMutationError::Overlapping);
+    }
     let result = sqlx::query("INSERT INTO attendance_sessions (guild_id,user_id,display_name,started_at,ended_at,open_since,note,created_at,updated_at) VALUES (?,?,?,?,NULL,?,?,?,?)")
-        .bind(guild_id).bind(user_id).bind(display_name).bind(started_at).bind(started_at).bind(note).bind(now).bind(now).execute(&mut *tx).await?;
+        .bind(guild_id).bind(user_id).bind(display_name).bind(started_at).bind(started_at).bind(note).bind(now).bind(now).execute(&mut *tx).await
+        ?;
     let id = result.last_insert_rowid();
     let after = SnapshotRow {
         started_at,
@@ -105,7 +109,7 @@ pub async fn insert_session(
             guild_id,
             user_id,
             session_id: id,
-            kind: "start",
+            kind: ChangeOperation::Start,
             before: None,
             after: &after,
             created_at: now,
@@ -124,7 +128,7 @@ pub async fn close_session(
     ended_at: i64,
     note: Option<&str>,
     now: i64,
-) -> Result<u64, sqlx::Error> {
+) -> Result<u64, super::SessionMutationError> {
     let mut tx = begin_immediate(pool).await?;
     let Some(existing) = sqlx::query_as::<_, AttendanceSession>(
         "SELECT * FROM attendance_sessions
@@ -139,6 +143,9 @@ pub async fn close_session(
     else {
         return Ok(0);
     };
+    if ended_at < existing.started_at {
+        return Err(super::SessionMutationError::EndBeforeStart);
+    }
     let after = SnapshotRow {
         started_at: existing.started_at,
         ended_at: Some(ended_at),
@@ -156,9 +163,7 @@ pub async fn close_session(
     )
     .await?
     {
-        return Err(sqlx::Error::Protocol(
-            "attendance session overlaps an existing session".into(),
-        ));
+        return Err(super::SessionMutationError::Overlapping);
     }
     let result = sqlx::query("UPDATE attendance_sessions SET ended_at = ?, open_since = NULL, note = ?, updated_at = ? WHERE id = ? AND guild_id = ? AND user_id = ? AND ended_at IS NULL AND deleted_at IS NULL")
         .bind(ended_at).bind(&after.note).bind(now).bind(id).bind(guild_id).bind(user_id).execute(&mut *tx).await?;
@@ -169,7 +174,7 @@ pub async fn close_session(
                 guild_id: existing.guild_id,
                 user_id: existing.user_id,
                 session_id: id,
-                kind: "end",
+                kind: ChangeOperation::End,
                 before: Some(&snapshot(&existing)),
                 after: &after,
                 created_at: now,
@@ -188,7 +193,7 @@ pub async fn end_or_correct_session(
     ended_at: i64,
     note: Option<&str>,
     now: i64,
-) -> Result<EndSessionResult, sqlx::Error> {
+) -> Result<EndSessionResult, super::SessionMutationError> {
     let mut tx = begin_immediate(pool).await?;
     if let Some(existing) = sqlx::query_as::<_, AttendanceSession>(
         "SELECT * FROM attendance_sessions
@@ -213,9 +218,7 @@ pub async fn end_or_correct_session(
         )
         .await?
         {
-            return Err(sqlx::Error::Protocol(
-                "attendance session overlaps an existing session".into(),
-            ));
+            return Err(super::SessionMutationError::Overlapping);
         }
         let after = SnapshotRow {
             started_at: existing.started_at,
@@ -247,7 +250,7 @@ pub async fn end_or_correct_session(
                 guild_id,
                 user_id,
                 session_id: existing.id,
-                kind: "end",
+                kind: ChangeOperation::End,
                 before: Some(&snapshot(&existing)),
                 after: &after,
                 created_at: now,
@@ -294,7 +297,7 @@ pub async fn reopen_session(
     guild_id: i64,
     user_id: i64,
     now: i64,
-) -> Result<u64, sqlx::Error> {
+) -> Result<u64, super::SessionMutationError> {
     let mut tx = begin_immediate(pool).await?;
     let Some(existing) = sqlx::query_as::<_, AttendanceSession>(
         "SELECT * FROM attendance_sessions
@@ -309,6 +312,9 @@ pub async fn reopen_session(
     else {
         return Ok(0);
     };
+    if now < existing.started_at {
+        return Err(super::SessionMutationError::EndBeforeStart);
+    }
     let after = SnapshotRow {
         started_at: existing.started_at,
         ended_at: None,
@@ -317,9 +323,7 @@ pub async fn reopen_session(
         deleted_at: existing.deleted_at,
     };
     if has_session_overlap(&mut tx, guild_id, user_id, id, existing.started_at, None).await? {
-        return Err(sqlx::Error::Protocol(
-            "attendance session overlaps an existing session".into(),
-        ));
+        return Err(super::SessionMutationError::Overlapping);
     }
     let result = sqlx::query("UPDATE attendance_sessions SET ended_at = NULL, open_since = ?, updated_at = ? WHERE id = ? AND guild_id = ? AND user_id = ? AND ended_at IS NOT NULL AND deleted_at IS NULL")
         .bind(now).bind(now).bind(id).bind(guild_id).bind(user_id).execute(&mut *tx).await?;
@@ -331,7 +335,7 @@ pub async fn reopen_session(
                 guild_id: existing.guild_id,
                 user_id: existing.user_id,
                 session_id: id,
-                kind: "continue",
+                kind: ChangeOperation::Continue,
                 before: Some(&snapshot(&existing)),
                 after: &after,
                 created_at: now,
