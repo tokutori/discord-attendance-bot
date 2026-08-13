@@ -109,8 +109,14 @@ pub async fn history(
     }
     ctx.send(CreateReply::default().embed(embed).ephemeral(true))
         .await?;
-    if let Some(notice) = notice {
-        acknowledge_auto_end_notice(ctx, notice.event_id).await?;
+    if let Some(notice) = notice
+        && let Err(error) = acknowledge_auto_end_notice(ctx, notice.event_id).await
+    {
+        tracing::warn!(
+            %error,
+            event_id = notice.event_id,
+            "response sent but failed to acknowledge automatic-end notice"
+        );
     }
     Ok(())
 }
@@ -146,8 +152,14 @@ pub async fn month(
     }
     ctx.send(CreateReply::default().embed(embed).ephemeral(true))
         .await?;
-    if let Some(notice) = notice {
-        acknowledge_auto_end_notice(ctx, notice.event_id).await?;
+    if let Some(notice) = notice
+        && let Err(error) = acknowledge_auto_end_notice(ctx, notice.event_id).await
+    {
+        tracing::warn!(
+            %error,
+            event_id = notice.event_id,
+            "response sent but failed to acknowledge automatic-end notice"
+        );
     }
     Ok(())
 }

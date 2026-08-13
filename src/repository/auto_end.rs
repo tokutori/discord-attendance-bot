@@ -139,6 +139,7 @@ pub async fn latest_auto_ended(
                SELECT 1 FROM attendance_changes later
                WHERE later.guild_id = a.guild_id AND later.user_id = a.user_id
                  AND later.id > a.change_id_at_application
+                 AND later.reverted_at IS NULL
            )
          ORDER BY a.applied_at DESC, a.id DESC LIMIT 1",
     )
@@ -174,39 +175,63 @@ pub async fn correct_auto_ended_session(
     now: i64,
 ) -> Result<Option<AutoEndCorrection>, sqlx::Error> {
     let mut tx = begin_immediate(pool).await?;
+    let result =
+        correct_auto_ended_session_in_tx(&mut tx, Some(id), guild_id, user_id, ended_at, note, now)
+            .await?;
+    if result.is_some() {
+        tx.commit().await?;
+    }
+    Ok(result)
+}
+
+pub(super) async fn correct_auto_ended_session_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    session_id: Option<i64>,
+    guild_id: i64,
+    user_id: i64,
+    ended_at: i64,
+    note: Option<&str>,
+    now: i64,
+) -> Result<Option<AutoEndCorrection>, sqlx::Error> {
     let Some(event) = sqlx::query_as::<_, AutoEndEventIdentity>(
         "SELECT a.id, a.automatic_ended_at FROM attendance_auto_end_events a
-         WHERE a.session_id = ? AND a.guild_id = ? AND a.user_id = ?
+         WHERE (? IS NULL OR a.session_id = ?) AND a.guild_id = ? AND a.user_id = ?
            AND a.corrected_at IS NULL
            AND NOT EXISTS (
                SELECT 1 FROM attendance_changes later
                WHERE later.guild_id = a.guild_id AND later.user_id = a.user_id
                  AND later.id > a.change_id_at_application
+                 AND later.reverted_at IS NULL
            )
          ORDER BY a.applied_at DESC, a.id DESC LIMIT 1",
     )
-    .bind(id)
+    .bind(session_id)
+    .bind(session_id)
     .bind(guild_id)
     .bind(user_id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?
     else {
         return Ok(None);
     };
     let Some(existing) = sqlx::query_as::<_, AttendanceSession>(
         "SELECT * FROM attendance_sessions
-         WHERE id = ? AND guild_id = ? AND user_id = ?
+         WHERE (? IS NULL OR id = ?) AND guild_id = ? AND user_id = ?
            AND ended_at = ? AND deleted_at IS NULL",
     )
-    .bind(id)
+    .bind(session_id)
+    .bind(session_id)
     .bind(guild_id)
     .bind(user_id)
     .bind(event.automatic_ended_at)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?
     else {
         return Ok(None);
     };
+    if ended_at < existing.started_at {
+        return Err(sqlx::Error::Protocol("attendance end before start".into()));
+    }
     let after = SnapshotRow {
         started_at: existing.started_at,
         ended_at: Some(ended_at),
@@ -223,11 +248,11 @@ pub async fn correct_auto_ended_session(
     .bind(ended_at)
     .bind(&after.note)
     .bind(now)
-    .bind(id)
+    .bind(existing.id)
     .bind(guild_id)
     .bind(user_id)
     .bind(event.automatic_ended_at)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
     if result.rows_affected() != 1 {
         return Ok(None);
@@ -238,17 +263,17 @@ pub async fn correct_auto_ended_session(
     )
     .bind(now)
     .bind(event.id)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
     if corrected.rows_affected() != 1 {
         return Ok(None);
     }
     insert_change(
-        &mut tx,
+        tx,
         ChangeInput {
             guild_id,
             user_id,
-            session_id: id,
+            session_id: existing.id,
             kind: "end",
             before: Some(&snapshot(&existing)),
             after: &after,
@@ -256,7 +281,6 @@ pub async fn correct_auto_ended_session(
         },
     )
     .await?;
-    tx.commit().await?;
     Ok(Some(AutoEndCorrection {
         session: AttendanceSession {
             ended_at: Some(ended_at),

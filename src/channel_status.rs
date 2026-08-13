@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{sync::OnceLock, time::Duration};
 
 use anyhow::Context as _;
 use chrono::Utc;
@@ -12,6 +12,12 @@ use crate::{
 };
 
 const TOPIC_REFRESH_INTERVAL: Duration = Duration::from_secs(600);
+const AUTO_END_RETRY_DELAY: Duration = Duration::from_secs(60);
+static STATUS_REFRESH_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+fn status_refresh_lock() -> &'static tokio::sync::Mutex<()> {
+    STATUS_REFRESH_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
 
 pub async fn apply_due_auto_ends(pool: &SqlitePool, guild_id: i64) -> anyhow::Result<usize> {
     let now = Utc::now().timestamp();
@@ -77,6 +83,7 @@ pub async fn refresh_activity(
     pool: &SqlitePool,
     guild_id: i64,
 ) -> anyhow::Result<usize> {
+    let _guard = status_refresh_lock().lock().await;
     let sessions = load_active_sessions(pool, guild_id).await?;
     let activity = activity_status(&sessions, Utc::now().timestamp());
     ctx.set_activity(Some(serenity::ActivityData::watching(activity)));
@@ -89,6 +96,7 @@ pub async fn refresh_status(
     guild_id: i64,
     channel_id: u64,
 ) -> anyhow::Result<usize> {
+    let _guard = status_refresh_lock().lock().await;
     let sessions = load_active_sessions(pool, guild_id).await?;
     let activity = activity_status(&sessions, Utc::now().timestamp());
     ctx.set_activity(Some(serenity::ActivityData::watching(activity)));
@@ -160,20 +168,28 @@ pub fn spawn_auto_end_scheduler(ctx: &serenity::Context, pool: SqlitePool, guild
                 }
             };
             tokio::time::sleep(Duration::from_secs(seconds_until_midnight)).await;
-            match apply_due_auto_ends(&pool, guild_id).await {
-                Ok(count) if count > 0 => {
-                    tracing::info!(
-                        guild_id,
-                        count,
-                        "completed midnight automatic attendance end"
-                    );
-                    if let Err(error) = refresh_activity(&ctx, &pool, guild_id).await {
-                        tracing::warn!(%error, guild_id, "failed to refresh activity after automatic end");
+            let count = loop {
+                match apply_due_auto_ends(&pool, guild_id).await {
+                    Ok(count) => break count,
+                    Err(error) => {
+                        tracing::error!(%error, guild_id, "failed midnight automatic attendance end");
+                        tracing::warn!(
+                            guild_id,
+                            delay_seconds = AUTO_END_RETRY_DELAY.as_secs(),
+                            "retrying failed midnight automatic attendance end"
+                        );
+                        tokio::time::sleep(AUTO_END_RETRY_DELAY).await;
                     }
                 }
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::error!(%error, guild_id, "failed midnight automatic attendance end");
+            };
+            if count > 0 {
+                tracing::info!(
+                    guild_id,
+                    count,
+                    "completed midnight automatic attendance end"
+                );
+                if let Err(error) = refresh_activity(&ctx, &pool, guild_id).await {
+                    tracing::warn!(%error, guild_id, "failed to refresh activity after automatic end");
                 }
             }
         }

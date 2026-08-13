@@ -84,6 +84,17 @@ pub struct AutoEndCorrection {
     pub automatic_ended_at: i64,
 }
 
+#[derive(Debug, Clone)]
+pub enum EndSessionResult {
+    Ended(AttendanceSession),
+    AutoEndedCorrected {
+        session: AttendanceSession,
+        automatic_ended_at: i64,
+    },
+    AlreadyInactive(Option<AttendanceSession>),
+    EndBeforeStart,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, FromRow)]
 pub struct UserProfile {
     pub guild_id: i64,

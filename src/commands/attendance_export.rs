@@ -154,8 +154,14 @@ pub async fn userconfig(
     }
     ctx.send(CreateReply::default().embed(embed).ephemeral(true))
         .await?;
-    if let Some(notice) = &notice {
-        acknowledge_notice(ctx, notice).await?;
+    if let Some(notice) = &notice
+        && let Err(error) = acknowledge_notice(ctx, notice).await
+    {
+        tracing::warn!(
+            %error,
+            event_id = notice.event_id,
+            "response sent but failed to acknowledge automatic-end notice"
+        );
     }
     Ok(())
 }
@@ -314,8 +320,14 @@ pub async fn export(
         )
         .await?;
     }
-    if let Some(notice) = &notice {
-        acknowledge_notice(ctx, notice).await?;
+    if let Some(notice) = &notice
+        && let Err(error) = acknowledge_notice(ctx, notice).await
+    {
+        tracing::warn!(
+            %error,
+            event_id = notice.event_id,
+            "response sent but failed to acknowledge automatic-end notice"
+        );
     }
     Ok(())
 }

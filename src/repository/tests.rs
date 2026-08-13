@@ -394,12 +394,14 @@ async fn auto_end_runs_after_midnight_and_user_end_corrects_it() {
     );
     assert!(peek_auto_end_notice(&pool, 1, 2).await.unwrap().is_none());
 
-    let correction =
-        correct_auto_ended_session(&pool, id, 1, 2, manual_end, Some("manual"), now + 1)
-            .await
-            .unwrap()
-            .unwrap();
-    assert_eq!(correction.session.ended_at, Some(manual_end));
+    let correction = end_or_correct_session(&pool, 1, 2, manual_end, Some("manual"), now + 1)
+        .await
+        .unwrap();
+    assert!(matches!(
+        correction,
+        EndSessionResult::AutoEndedCorrected { session, .. }
+            if session.ended_at == Some(manual_end)
+    ));
     assert!(latest_auto_ended(&pool, 1, 2).await.unwrap().is_none());
 }
 
@@ -459,6 +461,51 @@ async fn same_session_can_be_auto_ended_again_after_continue() {
             .await
             .unwrap();
     assert_eq!(event_count, 2);
+}
+
+#[tokio::test]
+async fn auto_end_continue_revert_can_be_corrected_again() {
+    let pool = test_pool().await;
+    let start = crate::time::DISPLAY_TIMEZONE
+        .with_ymd_and_hms(2026, 8, 8, 18, 0, 0)
+        .unwrap()
+        .timestamp();
+    let midnight = crate::time::DISPLAY_TIMEZONE
+        .with_ymd_and_hms(2026, 8, 9, 0, 0, 1)
+        .unwrap()
+        .timestamp();
+    let continued_at = crate::time::DISPLAY_TIMEZONE
+        .with_ymd_and_hms(2026, 8, 9, 1, 0, 0)
+        .unwrap()
+        .timestamp();
+    let corrected_end = crate::time::DISPLAY_TIMEZONE
+        .with_ymd_and_hms(2026, 8, 8, 20, 30, 0)
+        .unwrap()
+        .timestamp();
+    let id = insert_session(&pool, 1, 2, "Bem", start, None, start)
+        .await
+        .unwrap();
+
+    apply_due_auto_ends(&pool, 1, midnight).await.unwrap();
+    reopen_session(&pool, id, 1, 2, continued_at).await.unwrap();
+    assert!(matches!(
+        confirm_latest_revert(&pool, continued_at).await,
+        ConfirmationResult::Confirmed { .. }
+    ));
+
+    let correction = correct_auto_ended_session(
+        &pool,
+        id,
+        1,
+        2,
+        corrected_end,
+        Some("manual"),
+        continued_at + 2,
+    )
+    .await
+    .unwrap()
+    .expect("reverted continue must not block correction");
+    assert_eq!(correction.session.ended_at, Some(corrected_end));
 }
 
 #[tokio::test]

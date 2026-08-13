@@ -3,8 +3,8 @@ use sqlx::{Sqlite, SqlitePool, Transaction};
 use crate::attendance::AttendanceSession;
 
 use super::{
-    ActiveAttendanceMember, SnapshotRow,
-    auto_end::mark_active_auto_end_corrected,
+    ActiveAttendanceMember, EndSessionResult, SnapshotRow,
+    auto_end::{correct_auto_ended_session_in_tx, mark_active_auto_end_corrected},
     change::{ChangeInput, insert_change, snapshot},
     transaction::begin_immediate,
 };
@@ -179,6 +179,113 @@ pub async fn close_session(
         tx.commit().await?;
     }
     Ok(result.rows_affected())
+}
+
+pub async fn end_or_correct_session(
+    pool: &SqlitePool,
+    guild_id: i64,
+    user_id: i64,
+    ended_at: i64,
+    note: Option<&str>,
+    now: i64,
+) -> Result<EndSessionResult, sqlx::Error> {
+    let mut tx = begin_immediate(pool).await?;
+    if let Some(existing) = sqlx::query_as::<_, AttendanceSession>(
+        "SELECT * FROM attendance_sessions
+         WHERE guild_id = ? AND user_id = ?
+           AND ended_at IS NULL AND deleted_at IS NULL LIMIT 1",
+    )
+    .bind(guild_id)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    {
+        if ended_at < existing.started_at {
+            return Ok(EndSessionResult::EndBeforeStart);
+        }
+        if has_session_overlap(
+            &mut tx,
+            guild_id,
+            user_id,
+            existing.id,
+            existing.started_at,
+            Some(ended_at),
+        )
+        .await?
+        {
+            return Err(sqlx::Error::Protocol(
+                "attendance session overlaps an existing session".into(),
+            ));
+        }
+        let after = SnapshotRow {
+            started_at: existing.started_at,
+            ended_at: Some(ended_at),
+            open_since: None,
+            note: note.map(str::to_owned).or(existing.note.clone()),
+            deleted_at: existing.deleted_at,
+        };
+        let result = sqlx::query(
+            "UPDATE attendance_sessions
+             SET ended_at = ?, open_since = NULL, note = ?, updated_at = ?
+             WHERE id = ? AND guild_id = ? AND user_id = ?
+               AND ended_at IS NULL AND deleted_at IS NULL",
+        )
+        .bind(ended_at)
+        .bind(&after.note)
+        .bind(now)
+        .bind(existing.id)
+        .bind(guild_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() != 1 {
+            return Ok(EndSessionResult::AlreadyInactive(None));
+        }
+        insert_change(
+            &mut tx,
+            ChangeInput {
+                guild_id,
+                user_id,
+                session_id: existing.id,
+                kind: "end",
+                before: Some(&snapshot(&existing)),
+                after: &after,
+                created_at: now,
+            },
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok(EndSessionResult::Ended(AttendanceSession {
+            ended_at: Some(ended_at),
+            open_since: None,
+            note: after.note,
+            updated_at: now,
+            ..existing
+        }));
+    }
+
+    if let Some(corrected) =
+        correct_auto_ended_session_in_tx(&mut tx, None, guild_id, user_id, ended_at, note, now)
+            .await?
+    {
+        tx.commit().await?;
+        return Ok(EndSessionResult::AutoEndedCorrected {
+            session: corrected.session,
+            automatic_ended_at: corrected.automatic_ended_at,
+        });
+    }
+
+    let latest = sqlx::query_as::<_, AttendanceSession>(
+        "SELECT * FROM attendance_sessions
+         WHERE guild_id = ? AND user_id = ? AND ended_at IS NOT NULL AND deleted_at IS NULL
+         ORDER BY ended_at DESC LIMIT 1",
+    )
+    .bind(guild_id)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(EndSessionResult::AlreadyInactive(latest))
 }
 
 pub async fn reopen_session(

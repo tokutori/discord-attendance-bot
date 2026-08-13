@@ -158,7 +158,7 @@ pub fn auto_end_timestamp(started_at: i64, now: DateTime<Utc>) -> Option<i64> {
         return None;
     }
     let cutoff_time = NaiveTime::from_hms_opt(21, 0, 0).unwrap();
-    let cutoff_date = if started.time() <= cutoff_time {
+    let cutoff_date = if started.time() < cutoff_time {
         started.date_naive()
     } else {
         started.date_naive().succ_opt()?
@@ -241,6 +241,36 @@ mod tests {
         assert_eq!(auto_end_timestamp(started.timestamp(), before_cutoff), None);
         assert_eq!(
             auto_end_timestamp(started.timestamp(), after_cutoff),
+            Some(
+                Tokyo
+                    .with_ymd_and_hms(2026, 8, 9, 21, 0, 0)
+                    .unwrap()
+                    .timestamp()
+            )
+        );
+    }
+
+    #[test]
+    fn start_exactly_at_21_auto_ends_at_next_21() {
+        let started = Tokyo
+            .with_ymd_and_hms(2026, 8, 8, 21, 0, 0)
+            .unwrap()
+            .with_timezone(&Utc);
+        let after_midnight = Tokyo
+            .with_ymd_and_hms(2026, 8, 9, 0, 0, 1)
+            .unwrap()
+            .with_timezone(&Utc);
+
+        assert_eq!(
+            auto_end_timestamp(started.timestamp(), after_midnight),
+            None
+        );
+        let after_next_cutoff = Tokyo
+            .with_ymd_and_hms(2026, 8, 10, 0, 0, 1)
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(
+            auto_end_timestamp(started.timestamp(), after_next_cutoff),
             Some(
                 Tokyo
                     .with_ymd_and_hms(2026, 8, 9, 21, 0, 0)
