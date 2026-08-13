@@ -80,10 +80,20 @@ async fn main() -> anyhow::Result<()> {
                         tracing::error!(%error, guild_id, "failed to apply missed automatic attendance ends");
                     }
                 }
-                if let Err(error) =
-                    channel_status::refresh_activity(ctx, &database, guild_id as i64).await
+                if let Err(error) = channel_status::refresh_status(
+                    ctx,
+                    &database,
+                    guild_id as i64,
+                    status_channel_id,
+                )
+                .await
                 {
-                    tracing::warn!(%error, guild_id, "failed to refresh activity after startup recovery");
+                    tracing::warn!(
+                        %error,
+                        guild_id,
+                        status_channel_id,
+                        "failed to refresh activity and status topic after startup recovery"
+                    );
                 }
                 channel_status::spawn_auto_end_scheduler(
                     ctx,
