@@ -9,4 +9,5 @@
 /*.key
 /.secrets/
 /.credentials/
+/backups/
 *.log

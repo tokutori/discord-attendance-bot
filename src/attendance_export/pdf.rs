@@ -23,13 +23,15 @@ pub(super) fn pdf_font_path() -> anyhow::Result<PathBuf> {
         PathBuf::from(r"C:\Windows\Fonts\NotoSansJP-VF.ttf"),
         PathBuf::from(r"C:\Windows\Fonts\SimsunExtG.ttf"),
         PathBuf::from("/usr/share/fonts/truetype/noto/NotoSansJP-Regular.ttf"),
+        PathBuf::from("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+        PathBuf::from("/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf"),
     ];
     candidates
         .into_iter()
         .find(|path| path.is_file())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "日本語PDF用フォントが見つからない。ATTENDANCE_PDF_FONT_PATH に TTF フォントを指定してほしい"
+                "日本語PDF用フォントが見つからない。ATTENDANCE_PDF_FONT_PATH に TTF・OTF・TTC フォントを指定してほしい"
             )
         })
 }

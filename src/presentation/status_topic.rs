@@ -3,35 +3,46 @@ use crate::{attendance::AttendanceSession, time::format_datetime};
 const MAX_TOPIC_CHARS: usize = 1024;
 const MAX_ACTIVITY_CHARS: usize = 128;
 
-pub fn status_topic(sessions: &[AttendanceSession], updated_at: i64) -> String {
-    status_text(sessions, updated_at, MAX_TOPIC_CHARS)
+pub fn status_topic(sessions: &[AttendanceSession], updated_at: i64, show_names: bool) -> String {
+    status_text(sessions, updated_at, MAX_TOPIC_CHARS, show_names)
 }
 
-pub fn activity_status(sessions: &[AttendanceSession], updated_at: i64) -> String {
-    status_text(sessions, updated_at, MAX_ACTIVITY_CHARS)
+pub fn activity_status(
+    sessions: &[AttendanceSession],
+    updated_at: i64,
+    show_names: bool,
+) -> String {
+    status_text(sessions, updated_at, MAX_ACTIVITY_CHARS, show_names)
         .replace(":green_circle:", "🟢")
         .replace(":white_circle:", "⚪")
 }
 
-fn status_text(sessions: &[AttendanceSession], updated_at: i64, max_chars: usize) -> String {
+fn status_text(
+    sessions: &[AttendanceSession],
+    updated_at: i64,
+    max_chars: usize,
+    show_names: bool,
+) -> String {
     let updated = format!("(最終更新: {})", format_datetime(updated_at));
     if sessions.is_empty() {
         return format!(":white_circle: 現在0名活動中\n{updated}");
     }
 
     let mut topic = format!(":green_circle: 現在{}名活動中", sessions.len());
-    for (index, session) in sessions.iter().enumerate() {
-        let name = session
-            .display_name
-            .replace(['\r', '\n'], " ")
-            .trim()
-            .to_owned();
-        let candidate = format!("{topic}\n({}) {name}", index + 1);
-        if candidate.chars().count() + 1 + updated.chars().count() <= max_chars {
-            topic = candidate;
-        } else {
-            topic.push_str("\n…");
-            break;
+    if show_names {
+        for (index, session) in sessions.iter().enumerate() {
+            let name = session
+                .display_name
+                .replace(['\r', '\n'], " ")
+                .trim()
+                .to_owned();
+            let candidate = format!("{topic}\n({}) {name}", index + 1);
+            if candidate.chars().count() + 1 + updated.chars().count() <= max_chars {
+                topic = candidate;
+            } else {
+                topic.push_str("\n…");
+                break;
+            }
         }
     }
     topic.push('\n');
@@ -61,14 +72,14 @@ mod tests {
 
     #[test]
     fn shows_empty_status() {
-        let topic = status_topic(&[], 0);
+        let topic = status_topic(&[], 0, true);
         assert!(topic.contains(":white_circle: 現在0名活動中"));
         assert!(topic.contains("(最終更新:"));
     }
 
     #[test]
     fn shows_active_names() {
-        let topic = status_topic(&[session("Bem130"), session("Alice")], 0);
+        let topic = status_topic(&[session("Bem130"), session("Alice")], 0, true);
         assert!(topic.contains(":green_circle: 現在2名活動中"));
         assert!(topic.contains("(1) Bem130"));
         assert!(topic.contains("(2) Alice"));
@@ -84,29 +95,36 @@ mod tests {
             .unwrap()
             .timestamp();
         assert_eq!(
-            status_topic(&[session("𝕭𝖊𝖒 Estas Malsaĝulo / 蓓眸")], updated_at),
+            status_topic(&[session("𝕭𝖊𝖒 Estas Malsaĝulo / 蓓眸")], updated_at, true),
             ":green_circle: 現在1名活動中\n(1) 𝕭𝖊𝖒 Estas Malsaĝulo / 蓓眸\n(最終更新: 2026年8月9日 11:01)"
         );
     }
 
     #[test]
     fn limits_long_topics() {
-        let topic = status_topic(&[session(&"x".repeat(2_000))], 0);
+        let topic = status_topic(&[session(&"x".repeat(2_000))], 0, true);
         assert!(topic.chars().count() <= MAX_TOPIC_CHARS);
         assert!(topic.contains('…'));
     }
 
     #[test]
     fn limits_activity_status() {
-        let activity = activity_status(&[session(&"x".repeat(2_000))], 0);
+        let activity = activity_status(&[session(&"x".repeat(2_000))], 0, true);
         assert!(activity.chars().count() <= MAX_ACTIVITY_CHARS);
         assert!(activity.contains('…'));
     }
 
     #[test]
     fn uses_unicode_emojis_for_activity() {
-        let activity = activity_status(&[], 0);
+        let activity = activity_status(&[], 0, true);
         assert!(activity.starts_with("⚪ 現在0名活動中"));
         assert!(!activity.contains(":white_circle:"));
+    }
+
+    #[test]
+    fn count_only_mode_hides_names() {
+        let topic = status_topic(&[session("秘密の名前")], 0, false);
+        assert!(topic.contains("現在1名活動中"));
+        assert!(!topic.contains("秘密の名前"));
     }
 }

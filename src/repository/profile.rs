@@ -64,6 +64,23 @@ pub async fn user_profiles_for_export(
     .await
 }
 
+pub async fn delete_user_profile(
+    pool: &SqlitePool,
+    guild_id: i64,
+    user_id: i64,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "DELETE FROM attendance_user_profiles
+         WHERE guild_id = ? AND user_id = ?",
+    )
+    .bind(guild_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?
+    .rows_affected()
+        == 1)
+}
+
 #[cfg(test)]
 mod tests {
     use sqlx::sqlite::SqlitePoolOptions;
@@ -119,5 +136,9 @@ mod tests {
         assert_eq!(updated.real_name.as_deref(), Some("山田太郎"));
         assert_eq!(updated.role.as_deref(), Some("設計班"));
         assert_eq!(updated.name_reading.as_deref(), Some("やまだたろう"));
+
+        assert!(delete_user_profile(&pool, 1, 2).await.unwrap());
+        assert!(get_user_profile(&pool, 1, 2).await.unwrap().is_none());
+        assert!(!delete_user_profile(&pool, 1, 2).await.unwrap());
     }
 }

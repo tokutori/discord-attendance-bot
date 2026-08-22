@@ -1,8 +1,5 @@
 [advisories]
-# sqlx-mysql is present only as lockfile metadata from sqlx's optional drivers. This project
-# enables only sqlx/sqlite, and `cargo tree --target all --edges all -i rsa@0.9.10` confirms
-# that the vulnerable RSA crate is not part of any build graph.
 # Poise 0.6.2 currently brings `derivative` only as a proc-macro dependency. It
 # is not used by the bot at runtime, and no maintained Poise release removes it.
 # Keep the exception explicit so a new advisory still fails the audit gate.
-ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2024-0388"]
+ignore = ["RUSTSEC-2024-0388"]

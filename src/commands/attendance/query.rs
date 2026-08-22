@@ -5,7 +5,7 @@ use crate::{
     Context, Error, attendance,
     member_order::{self, MemberOrderKey},
     presentation, repository,
-    time::{self, DISPLAY_TIMEZONE, format_datetime, format_duration},
+    time::{self, format_datetime, format_duration},
 };
 
 use super::common::{
@@ -133,7 +133,8 @@ pub async fn month(
     let year_month = match target {
         Some(value) => time::parse_year_month(&value)?,
         None => {
-            let local_now = now.with_timezone(&DISPLAY_TIMEZONE);
+            let timezone = time::display_timezone();
+            let local_now = now.with_timezone(&timezone);
             attendance::YearMonth {
                 year: local_now.year(),
                 month: local_now.month(),

@@ -55,7 +55,7 @@ pub fn export_help_embed() -> serenity::CreateEmbed {
         .description("月単位の活動時間を、Discord表示名あり・本名のみのCSV/PDF（計4ファイル）で出力する。month は必須。通常は preview で本人だけに送信する。")
         .field(
             "使い方",
-            "`/attendanceexport export month:YYYY-MM [mode:preview|publish]`\n月次帳票を出力する。\n\n`/attendanceexport userconfig [generation] [real_name] [role] [name_reading]`\n代・本名・役割と名簿用の読みを設定する。全項目を省略すると現在値を表示する。\n\n`/attendanceexport help`\nこのヘルプを表示する。",
+            "`/attendanceexport export month:YYYY-MM [mode:preview|publish] [confirm_public]`\n月次帳票を出力する。publishでは confirm_public:true が必須。\n\n`/attendanceexport userconfig [generation] [real_name] [role] [name_reading]`\n代・本名・役割と名簿用の読みを設定する。全項目を省略すると現在値を表示する。\n\n`/attendanceexport clearuserconfig`\n代・本名・役割・名前の読みをすべて解除する。\n\n`/attendanceexport help`\nこのヘルプを表示する。",
             false,
         )
         .field(
@@ -65,7 +65,7 @@ pub fn export_help_embed() -> serenity::CreateEmbed {
         )
         .field(
             "preview / publish",
-            "`preview`（既定）: 実行者だけに表示する。\n`publish`: サーバー全員が見られるメッセージとして送信する。\n\n全員分の本名と活動時間を扱うため、exportの実行には「サーバー管理」権限が必要。",
+            "`preview`（既定）: 実行者だけに表示する。\n`publish`: サーバー全員が見られるメッセージとして送信する。confirm_public:true の明示確認が必要。\n\n全員分の本名と活動時間を扱うため、exportの実行には「サーバー管理」権限が必要。",
             false,
         )
         .field(
@@ -106,7 +106,7 @@ pub fn user_profile_embed(profile: Option<&UserProfile>, updated: bool) -> seren
         .field("役割", role, true)
         .field("名前の読み", name_reading, true)
         .footer(serenity::CreateEmbedFooter::new(
-            "未指定の項目は既存値を維持する",
+            "未指定の項目は維持。全解除は /attendanceexport clearuserconfig",
         ))
         .color(DEFAULT_COLOR)
 }
@@ -201,12 +201,13 @@ fn escape_roster_markdown(value: &str) -> String {
 }
 
 pub fn help_embed(display_name: &str) -> serenity::CreateEmbed {
+    let timezone = crate::time::display_timezone();
     serenity::CreateEmbed::new()
         .title("活動時間記録 ヘルプ")
         .author(serenity::CreateEmbedAuthor::new(display_name))
-        .description(
-            "活動時間を記録・確認・修正するためのコマンド一覧。\n時刻の入力と表示は日本時間。通常の応答は本人にだけ表示される。\n月次ファイル出力は `/attendanceexport help` を参照。",
-        )
+        .description(format!(
+            "活動時間を記録・確認・修正するためのコマンド一覧。\n時刻の入力と表示は {timezone}。通常の応答は本人にだけ表示される。\n月次ファイル出力は `/attendanceexport help` を参照。"
+        ))
         .field(
             "▶ 日常の操作コマンド",
             "`/attendance start [at] [note]` / `/join [at] [note]`\n活動を開始する。`at` は `HH:MM`（省略時は現在時刻）。\n\n`/attendance end [at] [note]` / `/exit [at] [note]`\n活動を終了する。\n\n`/attendance continue`\n直近の終了済み記録を活動中へ戻す。",
@@ -224,7 +225,7 @@ pub fn help_embed(display_name: &str) -> serenity::CreateEmbed {
         )
         .field(
             "🔐 確認の流れ",
-            "`revert` / `edit` / `delete` を実行すると、変更内容と5文字の確認IDが表示される。\n\n確認IDの有効期限は5分。確認前はDBを変更しない。\n`/attendance confirm id:<ID>` で確定する。IDは本人の要求にのみ使用でき、使用済みIDは再利用できない。別の変更が入った場合は安全のため確定されない。",
+            "`revert` / `edit` / `delete` を実行すると、変更内容と5文字の確認IDが表示される。\n\n確認IDの有効期限は5分。確認前はDBを変更しない。\n`/attendance confirm id:<ID>` で確定する。IDは本人の要求にのみ使用でき、使用済みIDは再利用できない。別の変更が入った場合は安全のため確定されない。\n\n`/attendance erase confirmation:DELETE` は、本人の全記録・履歴・ユーザー設定を即時かつ完全に削除する。取り消せない。",
             false,
         )
         .footer(serenity::CreateEmbedFooter::new(

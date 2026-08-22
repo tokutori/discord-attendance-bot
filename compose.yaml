@@ -1,0 +1,27 @@
+services:
+  bot:
+    image: discord-attendance-bot:local
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: sqlite:///data/attendance.db
+      ATTENDANCE_PDF_FONT_PATH: /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+      ATTENDANCE_SQLITE_SYNCHRONOUS: full
+    volumes:
+      - attendance-data:/data
+      - attendance-backups:/backups
+
+  maintenance:
+    image: discord-attendance-bot:local
+    build: .
+    entrypoint: ["attendance-maintenance"]
+    profiles: ["maintenance"]
+    volumes:
+      - attendance-data:/data
+      - attendance-backups:/backups
+
+volumes:
+  attendance-data:
+  attendance-backups:

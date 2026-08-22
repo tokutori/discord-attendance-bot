@@ -120,7 +120,7 @@
     <section>
       <h2>1. 目的</h2>
       <p>Discord 上で各メンバーが活動開始・活動終了を記録し、個人ごとの活動履歴および月間活動時間を確認できる Bot を実装する。</p>
-      <p>本システムは給与計算や法令対応を目的とする厳密な勤怠管理システムではない。鳥人間チーム内の活動量を概算記録し、本人が後から修正できることを重視する。</p>
+      <p>本システムは、日本語圏のクラブ・チームが1つのGuildごとにセルフホストする用途を対象とする。給与計算や法令対応を目的とする厳密な勤怠管理システム、中央サービス型のマルチGuild SaaS、多言語製品ではない。活動量を概算記録し、本人が後から修正または完全消去できることを重視する。</p>
     </section>
 
     <section>
@@ -131,6 +131,7 @@
         <li>活動記録は SQLite に保存する。</li>
         <li>Google Spreadsheet 等への同期は行わない。</li>
         <li>各メンバーは自分の記録だけを閲覧・修正・削除できる。</li>
+        <li>1つの実行プロセスは1つのDiscord GuildとローカルSQLite DBを担当する。</li>
       </ul>
 
       <pre><code>Discord
@@ -139,18 +140,19 @@
             └─ SQLite</code></pre>
 
       <h3>2.1 運用モード</h3>
-      <p>Bot は起動時引数によって <code>test</code> または <code>release</code> の運用モードを選択する。各モードは異なる Discord guild command の登録先と SQLite データベースを使用する。</p>
+      <p>引数なしのstandalone運用を既定とし、<code>DISCORD_GUILD_ID</code>と<code>DATABASE_URL</code>で1つのGuildと永続SQLite DBを指定する。既存運用との互換性のため、起動引数<code>test</code>または<code>release</code>による分離設定も使用できる。</p>
       <table>
         <thead>
           <tr><th>モード</th><th>Guild ID</th><th>データベース</th><th>起動例</th></tr>
         </thead>
         <tbody>
+          <tr><td><code>standalone</code></td><td><code>DISCORD_GUILD_ID</code></td><td><code>DATABASE_URL</code></td><td><code>cargo run --release</code></td></tr>
           <tr><td><code>test</code></td><td><code>DISCORD_TEST_GUILD_ID</code></td><td><code>DATABASE_URL_TEST</code></td><td><code>cargo run -- test</code></td></tr>
           <tr><td><code>release</code></td><td><code>DISCORD_RELEASE_GUILD_ID</code></td><td><code>DATABASE_URL_RELEASE</code></td><td><code>cargo run --release -- release</code></td></tr>
         </tbody>
       </table>
-      <p>引数は必須であり、未指定または不正な値の場合は起動しない。両モードとも指定した guild にのみ command を登録し、global command は使用しない。</p>
-      <p>各モードでは <code>ATTENDANCE_STATUS_CHANNEL_ID_TEST</code> または <code>ATTENDANCE_STATUS_CHANNEL_ID_RELEASE</code> で指定した専用テキストチャンネルの Topic と Bot の Activity を、活動中メンバーの人数・表示名・最終更新時刻で更新する。Activity の種別は、Bot が活動状況を監視している意味に合わせて <code>Watching</code> を使用する。Activity は活動記録の変更時に即時更新し、Topic は Bot 起動直後（周期処理の初回実行）および10分ごとに更新する。Topic の周期更新時には Activity も同時に更新する。Activity は 128 文字を超える部分を省略し、Topic は 1024 文字まで保持する。これらは Discord の Activity とチャンネル Topic であり、Embed 応答とは別の表示領域である。</p>
+      <p>各モードとも指定したGuildにのみcommandを登録し、global commandは使用しない。永続運用ではインメモリDBを拒否し、同じGuild・DB・tokenに対する複数プロセス起動をサポートしない。</p>
+      <p><code>ATTENDANCE_STATUS_MODE</code>は<code>disabled</code>、<code>count</code>、<code>names</code>から選択する。<code>count</code>は人数だけ、<code>names</code>は人数とDiscord表示名をTopicとActivityへ表示し、<code>disabled</code>では更新しない。Channel IDがある場合の既定値は個人情報を表示しない<code>count</code>、Channel IDがない場合は<code>disabled</code>とする。有効時だけ専用Channel IDを必須とする。更新間隔は<code>ATTENDANCE_STATUS_REFRESH_SECONDS</code>で設定する。Activityの種別は<code>Watching</code>とし、128文字、Topicは1024文字まで保持する。</p>
     </section>
 
     <section>
@@ -220,19 +222,29 @@
             <td><code>edit</code>、<code>delete</code>、<code>revert</code> の確認要求を確定する。</td>
           </tr>
           <tr>
+            <td><code>/attendance erase</code></td>
+            <td><code>confirmation</code></td>
+            <td><code>DELETE</code>の明示入力により、本人の全記録・変更履歴・確認要求・自動終了イベント・プロフィールを物理削除する。</td>
+          </tr>
+          <tr>
             <td><code>/attendanceexport help</code></td>
             <td>なし</td>
             <td>月次ファイル出力の操作方法と出力形式を表示する。</td>
           </tr>
           <tr>
             <td><code>/attendanceexport export</code></td>
-            <td><code>month</code>、<code>mode</code></td>
-            <td>指定月のDiscord表示名あり版・本名のみ版の CSV と PDF（計4ファイル）を preview または publish で出力する。</td>
+            <td><code>month</code>、<code>mode</code>、<code>confirm_public</code></td>
+            <td>指定月のDiscord表示名あり版・本名のみ版の CSV と PDF（計4ファイル）を preview または publish で出力する。publishは<code>confirm_public:true</code>を必須とする。</td>
           </tr>
           <tr>
             <td><code>/attendanceexport userconfig</code></td>
-            <td><code>generation</code>、<code>real_name</code>、<code>role</code></td>
-            <td>出力に使用する本人の代、本名、役割を設定または表示する。</td>
+            <td><code>generation</code>、<code>real_name</code>、<code>role</code>、<code>name_reading</code></td>
+            <td>出力に使用する本人の代、本名、役割、名前の読みを設定または表示する。</td>
+          </tr>
+          <tr>
+            <td><code>/attendanceexport clearuserconfig</code></td>
+            <td>なし</td>
+            <td>本人の代、本名、役割、名前の読みをすべて解除する。</td>
           </tr>
         </tbody>
       </table>
@@ -372,7 +384,7 @@
 活動時間: 4時間30分
 記録ID: #128</code></pre>
       <h4>自動終了後の入力</h4>
-      <p>Bot は日本時間の翌日 0:00 に、前日 21:00 まで活動中だった記録を前日 21:00 終了として自動終了する。21:00以降に開始または <code>continue</code> した記録は次の日の21:00を期限とし、その翌日0:00の処理対象にする。Bot が停止していた場合は次回起動時に未処理分を補完する。</p>
+      <p>Botは<code>ATTENDANCE_TIMEZONE</code>の翌日0:00に、開始・再開後に次に到来する<code>ATTENDANCE_AUTO_END_TIME</code>を終了時刻として自動終了する。既定値は<code>Asia/Tokyo</code>と21:00で、<code>disabled</code>により自動終了を無効化できる。Bot停止中の未処理分は次回起動時に補完する。</p>
       <p>自動終了後にユーザーが <code>end</code>、または確認済みの <code>edit</code>・<code>delete</code> を実行した場合は、対応する自動終了イベントを訂正済みにしてユーザー入力を正とする。同じ記録を <code>continue</code> した後に再び終了を忘れた場合は、別の自動終了イベントとして処理する。次のユーザー操作時には、自動終了した記録と修正方法を通知し、応答送信の成功後にだけ通知済みにする。</p>
 
       <h3>5.4 <code>/attendance continue</code></h3>
@@ -544,10 +556,10 @@ Bem130
         </tbody>
       </table>
 
-      <h3>5.12 <code>/attendanceexport help</code> / <code>export</code> / <code>userconfig</code></h3>
+      <h3>5.12 <code>/attendanceexport help</code> / <code>export</code> / <code>userconfig</code> / <code>clearuserconfig</code></h3>
       <p><code>/attendanceexport help</code> は月次ファイル出力の使い方を Embed で表示する。</p>
-      <p><code>/attendanceexport export</code> は <code>month</code> を必須とし、<code>YYYY-MM</code> 形式の指定月についてDiscord表示名あり版と本名のみ版の CSV と PDF、合計4ファイルを同時に生成する。<code>mode</code> は <code>preview</code> または <code>publish</code> で、既定値は <code>preview</code> とする。全メンバーの本名を含み得るため、実行者には「サーバー管理」権限を要求する。Botにはメッセージ送信・Embed・ファイル添付権限を要求する。<code>preview</code> は実行者だけに表示し、<code>publish</code> は生成成功時のみ別の公開メッセージとして送信する。処理開始、エラー、公開成功の確認はどちらのmodeでもephemeralとする。</p>
-      <p><code>/attendanceexport userconfig</code> は本人の <code>generation</code>（代・整数）、<code>real_name</code>（本名）、<code>role</code>（代表、新入生、班名などの自由記述）、<code>name_reading</code>（活動中名簿の五十音順に使う読み）を設定する。読みはひらがな・カタカナを受け付け、ひらがなへ正規化して保存する。引数なしでは現在値を ephemeral Embed で表示し、一部の引数だけを指定した場合は指定していない設定を保持する。設定結果もEmbedで各項目を説明する。</p>
+      <p><code>/attendanceexport export</code> は <code>month</code> を必須とし、<code>YYYY-MM</code> 形式の指定月についてDiscord表示名あり版と本名のみ版の CSV と PDF、合計4ファイルを同時に生成する。<code>mode</code> は <code>preview</code> または <code>publish</code> で、既定値は <code>preview</code> とする。全メンバーの本名を含み得るため、実行者には「サーバー管理」権限を要求する。Botにはメッセージ送信・Embed・ファイル添付権限を要求する。<code>preview</code> は実行者だけに表示する。<code>publish</code> は<code>confirm_public:true</code>を必須とし、生成成功時のみ別の公開メッセージとして送信し、実行Guild・user・対象月を監査ログへ記録する。処理開始、エラー、公開成功の確認はどちらのmodeでもephemeralとする。</p>
+      <p><code>/attendanceexport userconfig</code> は本人の <code>generation</code>（代・整数）、<code>real_name</code>（本名）、<code>role</code>（代表、新入生、班名などの自由記述）、<code>name_reading</code>（活動中名簿の五十音順に使う読み）を設定する。読みはひらがな・カタカナを受け付け、ひらがなへ正規化して保存する。引数なしでは現在値を ephemeral Embed で表示し、一部の引数だけを指定した場合は指定していない設定を保持する。<code>clearuserconfig</code>は全プロフィール項目を解除する。</p>
       <h4>表の構造</h4>
       <p>表の縦方向は対象月に記録があるユーザー、横方向は対象月の日数にユーザー情報列と合計列を加えたものとする。4ファイルは <code>/attendance list</code> と共通の比較処理により、役割、代（昇順）、名前の読み（五十音順）で並べる。Discord表示名ありCSVでは代・本名・役割・Discord表示名を個別の列とし、PDFではユーザー情報欄にまとめる。本名のみ版はDiscord表示名を含めず、本名未設定時は「未設定」と表示する。CSVのユーザー入力列は表計算ソフトの数式として評価される危険な先頭文字を無害化し、その後でCSV構文をescapeする。活動時間があるセルは <code>時間:分</code> 形式で表示する。PDFの活動時間0セルは空欄、CSVの活動時間0セルは <code>0:00</code> とする。PDFの文字はセル内で上下中央揃えとし、長い代・本名・役割・Discord表示名は省略せず折り返しと文字サイズ調整を行う。活動中の記録は出力時点までを暫定値として含める。</p>
       <h4>注記</h4>
@@ -558,7 +570,7 @@ Bem130
       <h2>6. 時刻の扱い</h2>
       <ul>
         <li>DB には UTC の Unix timestamp を保存する。</li>
-        <li>利用者向け表示は日本時間で行う。</li>
+        <li>利用者向け表示は<code>ATTENDANCE_TIMEZONE</code>で指定したIANA timezone（既定<code>Asia/Tokyo</code>）で行う。</li>
         <li><code>at</code> には <code>HH:MM</code> 形式を許可する。<code>start</code> は当日の時刻として解釈して未来なら拒否し、<code>end</code> は現在から見て最も近い過去の同時刻として解釈する。</li>
         <li><code>edit</code> には <code>YYYY-MM-DD HH:MM</code> 形式を使用する。</li>
         <li>終了時刻が開始時刻より前になる場合、および <code>edit</code> で未来時刻を指定した場合は保存せずエラー表示する。</li>
@@ -621,10 +633,11 @@ WHERE deleted_at IS NULL;</code></pre>
         <li>未終了記録は、同一 guild・同一 user につき最大1件とする。</li>
         <li>重複 <code>start</code> と重複 <code>end</code> はエラー終了させず、no-op として現在状態を表示する。</li>
         <li><code>continue</code> は新しい記録を作らず、直近終了記録を再び未終了状態へ戻す。</li>
-        <li>自動終了は日本時間の毎日0時に実行し、前日21時まで継続していた区間を21時終了として扱う。21時以降に開始・再開した区間の期限は次の日の21時とする。Bot停止中の未処理分は次回起動時に補完する。</li>
+        <li>自動終了は設定timezoneの毎日0時に実行し、開始・再開後に次に到来する設定時刻を終了時刻として扱う。無効化可能で、Bot停止中の未処理分は次回起動時に補完する。</li>
         <li>自動終了後のユーザー <code>end</code> は自動終了を取り消し、ユーザー入力を正として保存する。</li>
         <li>編集・削除時は、SQL 条件に <code>guild_id</code> と <code>user_id</code> を含める。</li>
         <li>削除済み記録は通常の検索・集計から除外する。</li>
+        <li><code>/attendance erase confirmation:DELETE</code>は本人所有の全データを外部キーcascadeを含めて物理削除する。バックアップと公開済み帳票は別途保持方針に従う。</li>
         <li>表示名は参考情報として保存する。本人識別には Discord user ID を使用する。</li>
         <li>成功した <code>start</code>、<code>end</code>、<code>continue</code>、<code>edit</code>、<code>delete</code> は <code>revert</code> 用の操作履歴を作成する。no-op や失敗した操作は履歴に追加しない。</li>
         <li>同一ユーザーの削除されていない活動区間は重複させない。競合し得る確認・変更処理は即時write transactionで直列化し、WALのbusy/lockedにはbusy timeoutと限定的な再試行を使用する。</li>
@@ -658,7 +671,7 @@ duration        = max(effective_end - effective_start, 0)</code></pre>
       <p>1回あたり平均は <code>total / session_count</code>、1日あたり平均は <code>total / elapsed_calendar_days</code>、1週間あたり平均は <code>total * 7 / elapsed_calendar_days</code> とする。秒未満は整数除算で切り捨てる。<code>elapsed_calendar_days</code> は当月では今日を含む経過暦日、過去月では全日数、未来月では0とする。</p>
       <h3>9.1 月次ファイル出力</h3>
       <p><code>/attendanceexport export</code> は同じ月内重複計算をユーザー別・日別に展開し、<code>attendance_user_profiles</code> の代・本名・役割・名前の読みを反映したDiscord表示名あり版・本名のみ版のCSVとPDF（計4ファイル）にする。全ファイルは活動中名簿と共通の比較処理で並べる。ファイル出力では活動中の記録も出力時点までの暫定値として含める。出力表はユーザー行、日付列、合計列で構成する。生成後はinteraction固有の添付サイズ上限を各ファイルについて検査し、超過時は送信しない。</p>
-      <p>PDF 生成には <a href="https://docs.rs/printpdf/latest/printpdf/">printpdf</a> を採用する。表の配置・改ページ・文字レイアウトは Bot 側で明示的に制御し、保存時に <code>PdfSaveOptions.subset_fonts = true</code> を指定する。これにより、PDF に現れる文字のグリフだけを TTF から埋め込み、CJK フォント全体の埋め込みによる添付サイズ増大を避ける。日本語フォントは環境依存のため、<code>ATTENDANCE_PDF_FONT_PATH</code> で TTF を指定できる。</p>
+      <p>PDF 生成には <a href="https://docs.rs/printpdf/latest/printpdf/">printpdf</a> を採用する。表の配置・改ページ・文字レイアウトは Bot 側で明示的に制御し、保存時に <code>PdfSaveOptions.subset_fonts = true</code> を指定する。これにより、PDF に現れる文字のグリフだけをフォントから埋め込み、CJK フォント全体の埋め込みによる添付サイズ増大を避ける。日本語フォントは環境依存のため、<code>ATTENDANCE_PDF_FONT_PATH</code> でTTF・OTF・TTCを指定できる。</p>
       <p><a href="https://docs.rs/genpdf/latest/genpdf/">genpdf</a> は <a href="https://docs.rs/genpdf/latest/genpdf/elements/">TableLayout</a> など高レベル API が便利だが、今回の使用文字だけのサブセット埋め込みを明示的に保証しにくいため採用しない。<a href="https://docs.rs/lopdf/latest/lopdf/">lopdf</a> / <a href="https://docs.rs/lopdf-table/latest/lopdf_table/">lopdf-table</a> は PDF 構造や表の細かな後処理が必要になった場合の候補とする。</p>
     </section>
 

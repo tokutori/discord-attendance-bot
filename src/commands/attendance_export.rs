@@ -15,7 +15,7 @@ enum ExportMode {
 #[poise::command(
     slash_command,
     rename = "attendanceexport",
-    subcommands("export", "userconfig", "help"),
+    subcommands("export", "userconfig", "clearuserconfig", "help"),
     subcommand_required
 )]
 pub async fn attendanceexport(_: Context<'_>) -> Result<(), Error> {
@@ -166,6 +166,29 @@ pub async fn userconfig(
     Ok(())
 }
 
+/// 本人の代・本名・役割・読み仮名の設定をすべて解除する。
+#[poise::command(slash_command, guild_only)]
+pub async fn clearuserconfig(ctx: Context<'_>) -> Result<(), Error> {
+    ctx.defer_ephemeral().await?;
+    let (guild_id, user_id) = ids(ctx)?;
+    let deleted = repository::delete_user_profile(&ctx.data().database, guild_id, user_id).await?;
+    let description = if deleted {
+        "代・本名・役割・名前の読みをすべて削除した。活動記録は変更していない。"
+    } else {
+        "削除するユーザー設定はなかった。活動記録は変更していない。"
+    };
+    ctx.send(
+        CreateReply::default()
+            .embed(presentation::response_embed(
+                "ユーザー設定を解除した",
+                description,
+            ))
+            .ephemeral(true),
+    )
+    .await?;
+    Ok(())
+}
+
 /// 指定月の全メンバーの活動時間をCSV・PDFで出力する。
 #[poise::command(
     slash_command,
@@ -177,9 +200,24 @@ pub async fn export(
     ctx: Context<'_>,
     #[description = "対象月（YYYY-MM）"] month: String,
     #[description = "送信範囲（既定値 preview）"] mode: Option<ExportMode>,
+    #[description = "publishで本名を公開することを確認した場合のみ true"] confirm_public: Option<
+        bool,
+    >,
 ) -> Result<(), Error> {
     let publish = matches!(mode.unwrap_or(ExportMode::Preview), ExportMode::Publish);
     ctx.defer_ephemeral().await?;
+    if publish && confirm_public != Some(true) {
+        ctx.send(
+            CreateReply::default()
+                .embed(presentation::error_embed(
+                    "公開エクスポートは実行されなかった",
+                    "publishは全メンバーの本名と活動時間をチャンネルへ公開する。公開範囲と同意を確認したうえで、confirm_public に true を指定して再実行してほしい。previewには確認は不要。",
+                ))
+                .ephemeral(true),
+        )
+        .await?;
+        return Ok(());
+    }
     let year_month = time::parse_year_month(month.trim())?;
     let (guild_id, user_id) = ids(ctx)?;
     let now = Utc::now();
@@ -262,6 +300,12 @@ pub async fn export(
     let pdf_with_discord_name = format!("attendance-{month_label}-with-discord.pdf");
     let pdf_real_name_only_name = format!("attendance-{month_label}-real-name-only.pdf");
     if publish {
+        tracing::info!(
+            guild_id,
+            user_id,
+            month = %month_label,
+            "publishing attendance export with personal data"
+        );
         ctx.channel_id()
             .send_message(
                 ctx.serenity_context(),

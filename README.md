@@ -1,13 +1,24 @@
-# Discord 活動時間記録 Bot v1.0
+# Discord 活動時間記録 Bot
 
-鳥人間チームのメンバーが Discord の Slash Command から活動時間を記録する Rust 製 Bot である。SQLite のみを使用し、各利用者は自分の記録を開始・終了・継続・閲覧・修正・削除できる。
+日本語圏のクラブ・チーム向けに、メンバーの活動時間をDiscordのSlash Commandから記録するセルフホスト型Botです。1つの実行プロセスが1つのDiscord Guildを担当し、データは運用者が管理するSQLiteファイルへ保存します。
 
-## 実装済みコマンド
+中央サービス型のマルチGuild SaaS、多言語対応、給与・法定勤怠管理を目的とした製品ではありません。法令上の勤怠・賃金計算に使用する場合は、必要な要件を別途確認してください。
 
-- `/attendance start [at] [note]`
-- `/join [at] [note]`（`/attendance start` の短縮名）
-- `/attendance end [at] [note]`
-- `/exit [at] [note]`（`/attendance end` の短縮名）
+## 主な機能
+
+- 活動の開始、終了、再開、修正、削除、取り消し
+- 日本語のephemeral Embedによる本人向け応答
+- 月別集計とCSV・PDF出力
+- SQLiteの所有者制約、区間重複防止、WAL競合対策
+- 設定可能なタイムゾーンと自動終了時刻
+- Activity／チャンネルTopicを、無効・人数のみ・名前表示から選択
+- 本人によるプロフィール解除と全個人データの完全消去
+- 稼働中SQLiteの整合スナップショット、検証、復元用の保守コマンド
+
+## コマンド
+
+- `/attendance start [at] [note]`、短縮名 `/join`
+- `/attendance end [at] [note]`、短縮名 `/exit`
 - `/attendance continue`
 - `/attendance revert`
 - `/attendance status`
@@ -17,201 +28,188 @@
 - `/attendance edit record [start] [end] [note]`
 - `/attendance delete record`
 - `/attendance confirm id`
+- `/attendance erase confirmation:DELETE`
 - `/attendance help`
-- `/attendanceexport export month [mode]`
+- `/attendanceexport export month [mode] [confirm_public]`
 - `/attendanceexport userconfig [generation] [real_name] [role] [name_reading]`
+- `/attendanceexport clearuserconfig`
 - `/attendanceexport help`
 
-`at` は `HH:MM`、`target` は `YYYY-MM`、編集日時は `YYYY-MM-DD HH:MM` 形式で入力する。時刻入力と表示は日本時間、SQLite 内部では UTC Unix timestamp を使用する。`end at:` は現在から見て最も近い過去の同時刻として解釈するため、日付が変わった直後に前夜の終了時刻を入力できる。未来時刻になる `start`・`edit` は拒否する。
+`at`は`HH:MM`、`target`は`YYYY-MM`、編集日時は`YYYY-MM-DD HH:MM`形式です。入力と表示には`ATTENDANCE_TIMEZONE`を使用し、DBにはUTC Unix timestampを保存します。
 
 ## 必要環境
 
-- Rust 1.88 以上
-- Discord Application / Bot token
-- Bot を追加できる Discord サーバー
+推奨経路はDockerです。ソースから実行する場合は次が必要です。
 
-## Discord 側の準備
+- Rust 1.94以上
+- Discord ApplicationとBot token
+- Botを追加できるDiscordサーバー
+- PDF出力に使う日本語TTF・OTF・TTCフォント
 
-1. Discord Developer Portal で Application を作成する。
-2. Bot を作成して token を取得する。
-3. Installation で `bot` と `applications.commands` を使用して対象サーバーへ追加する。
-4. Discord の Developer Mode を有効にし、開発用サーバーIDをコピーする。
+## Discord側の準備
 
-Bot は message content を読まないため、Privileged Gateway Intents は不要である。
+1. [Discord Developer Portal](https://discord.com/developers/applications)でApplicationとBotを作成し、tokenを取得します。
+2. Installationで`bot`と`applications.commands`を使用して対象サーバーへ追加します。
+3. Developer Modeを有効にしてGuild IDをコピーします。
+4. ステータスTopicを使う場合だけ専用テキストチャンネルを作り、Channel IDをコピーします。
 
-## セットアップ
+BotはMessage Contentを読み取らないため、Privileged Gateway Intentsは不要です。必要なBot権限は次のとおりです。
+
+- 通常応答と帳票: View Channel、Send Messages、Embed Links、Attach Files
+- ステータスTopicを使う場合のみ: 対象チャンネルのManage Channels
+
+Manage Channelsは、可能ならサーバー全体ではなく専用チャンネルへの権限上書きで付与してください。月次exportの実行者にはDiscordのManage Guild権限が必要です。
+
+## 設定
+
+`.env.example`を`.env`へコピーし、ダミー値を置き換えます。`.env`はGitへ追加しないでください。
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-`.env` を編集する。テスト用と本番用のGuild IDおよびSQLite DBを分ける。
+主要設定は次のとおりです。
 
-```dotenv
-DISCORD_TOKEN=...
-DISCORD_TEST_GUILD_ID=...
-DISCORD_RELEASE_GUILD_ID=...
-DATABASE_URL_TEST=sqlite://attendance-test.db
-DATABASE_URL_RELEASE=sqlite://attendance-release.db
-ATTENDANCE_STATUS_CHANNEL_ID_TEST=...
-ATTENDANCE_STATUS_CHANNEL_ID_RELEASE=...
-# 任意: PDF用日本語TTFフォントのパス
-# ATTENDANCE_PDF_FONT_PATH=C:\\Windows\\Fonts\\NotoSansJP-VF.ttf
-RUST_LOG=discord_attendance_bot=info,poise=info,serenity=info
-```
+| 変数 | 必須 | 既定値 | 説明 |
+|---|---:|---|---|
+| `DISCORD_TOKEN` | はい | なし | Bot token |
+| `DISCORD_GUILD_ID` | はい | なし | このプロセスが担当するGuild ID |
+| `DATABASE_URL` | はい | なし | 永続SQLite URL。例:`sqlite://attendance.db` |
+| `ATTENDANCE_TIMEZONE` | いいえ | `Asia/Tokyo` | IANA timezone |
+| `ATTENDANCE_AUTO_END_TIME` | いいえ | `21:00` | `HH:MM`、または`disabled` |
+| `ATTENDANCE_STATUS_MODE` | いいえ | Channel IDがあれば`count`、なければ`disabled` | `disabled`、`count`、`names` |
+| `ATTENDANCE_STATUS_CHANNEL_ID` | 条件付き | なし | status modeが`count`か`names`の場合に必須 |
+| `ATTENDANCE_STATUS_REFRESH_SECONDS` | いいえ | `600` | 60～86400秒 |
+| `ATTENDANCE_SQLITE_SYNCHRONOUS` | いいえ | `full` | `full`推奨。`normal`は電源断時に直近commitを失う可能性あり |
+| `ATTENDANCE_PDF_FONT_PATH` | いいえ | OS候補を検索 | 日本語フォントへのパス |
+| `RUST_LOG` | いいえ | info相当 | ログフィルタ |
 
-`test` と `release` の起動引数によって、使用するGuild IDとDBが切り替わる。どちらもGuild commandとして登録されるため、指定したサーバーだけで利用できる。
+永続運用モードではインメモリSQLiteを拒否します。SQLite WALはネットワークファイルシステム向けではないため、DBは実行ホストのローカルディスクまたはDockerのローカルvolumeに置いてください。同じGuild・DB・tokenに対して複数のBotプロセスを同時起動しないでください。
 
-各サーバーに活動状況表示用のテキストチャンネルを1つ用意し、そのチャンネルIDを設定する。Botには対象チャンネルのTopicを編集できる `Manage Channels` 権限が必要である。可能であればサーバー全体ではなく、専用チャンネルへの権限上書きで付与する。
+以前の`test` / `release`分離運用も互換性のため利用できます。起動引数を付けると、`.env.example`末尾に記載したモード別変数を使用します。
 
-## 起動
-
-テスト環境:
-
-```powershell
-cargo run -- test
-```
-
-本番環境:
+## Dockerで起動する
 
 ```powershell
-cargo run --release -- release
+docker compose build
+docker compose up -d
+docker compose logs -f bot
 ```
 
-引数は `test` または `release` のいずれかが必須である。不正な引数や未指定の場合は起動しない。
+DBとバックアップはDocker named volumeへ保存されます。コンテナを削除しても、volumeを明示的に削除しない限りデータは残ります。`docker compose down -v`はDBとバックアップvolumeを削除するため、通常運用では実行しないでください。
 
-初回起動時に、選択したモードのSQLite databaseとmigration tableが自動作成される。
+## ソースから起動する
 
-v1.0では本番運用前の設計見直しに伴いmigration履歴とDB schemaを作り直している。v0.0で作成したテストDBとの移行互換性はないため、v1.0を初めて起動する前にBotを停止し、旧テストDBと対応する `-wal`・`-shm` を削除して新規作成する。本番DBの移行手順としてこの方法を使用してはならない。
-
-`name_reading` を含む現在のschemaも実運用開始前の初期schemaとして `0001_initial_schema.sql` に反映している。以前のテストDBはBot停止中に対応する `-wal`・`-shm` とともに削除し、作り直す。
-
-BotのActivityは活動記録の変更時に即時更新する。専用チャンネルのTopicはBot起動時および10分ごとに更新し、その周期更新時にはActivityも同時に更新する。
-
-Botは日本時間の毎日0時に、前日21時まで活動中だった記録を21時終了として自動終了する。21時以降に開始または `continue` した記録は、直後に過去時刻へ終了させず、次の日の21時を自動終了候補とする。Botが0時に停止していた場合は、次回起動時に未処理分を補完する。同じ記録を `continue` した後に再び終了を忘れた場合も、自動終了イベントを別に記録して安全に処理する。
-
-自動終了後にユーザーが `end`・`edit`・`delete` を確定した場合は、該当する自動終了を訂正済みにしてユーザー入力を正とする。通知は次のユーザー操作の応答へ付加し、その応答の送信に成功した後でのみ通知済みにするため、Discord送信失敗で通知が失われない。
-
-Activityの種別は、Botが活動状況を監視している意味に合わせて `Watching` を使用する。
-
-Slash Command の操作結果・入力エラー・権限エラーなど、利用者向けの応答は原則として ephemeral Embed で表示する。`history`、`month`、`help` は専用の Embed レイアウトを使用する。
-
-`/attendance list` は現在活動中のメンバーを、役割、代（昇順）、名前の読み（五十音順）の階層で表示し、本名とDiscord表示名を併記する。Embed内は `# 役割`、`## 代`、`- 本名（Discord表示名）` のMarkdown階層とし、長い名簿は見出しを保ったまま複数のephemeral Embedへ分割する。`name_reading` はひらがな・カタカナで設定でき、保存時にひらがなへ正規化する。役割や代が未設定のグループ、およびユーザー設定がないメンバーは末尾に表示する。名前は人物の識別子にせず、同一人物の判定にはDiscord user IDを使用する。本名とDiscord表示名には文字種を仮定しない。
-
-月次exportは、Discord表示名あり版と本名のみ版についてCSV・PDFを各1つ、合計4ファイル生成する。全ファイルは `/attendance list` と共通の比較処理を使い、役割、代（昇順）、名前の読み（五十音順）で並べる。本名のみ版では本名未設定者を「未設定」と表示し、Discord表示名で補完しない。
-
-```text
-:green_circle: 現在2名活動中
-(1) Bem130
-(2) Alice
-(最終更新: 2026年8月9日 21:30)
+```powershell
+cargo build --locked --release
+cargo run --locked --release
 ```
 
-ActivityはDiscordの表示上限に合わせ、128文字を超える部分を省略する。Topicは1024文字まで保持する。
+互換モードは次のように起動します。
 
-## テストと静的検査
+```powershell
+cargo run --locked -- test
+cargo run --locked --release -- release
+```
+
+初回起動時にSQLiteファイルとmigration tableを自動作成します。Bot起動時には実行中SQLiteの版を検査し、既知のWAL-reset破損バグの影響を受ける版では起動しません。本リポジトリは修正版SQLite 3.51.3を同梱する`libsqlite3-sys`を固定しています。
+
+## 自動終了とステータス表示
+
+自動終了が有効な場合、設定タイムゾーンの毎日0時に処理します。開始または再開した時刻から見て次に到来する設定時刻を自動終了期限とし、Bot停止中の未処理分は次回起動時に補完します。
+
+`ATTENDANCE_STATUS_MODE=count`は人数だけを表示し、`names`はDiscord表示名もTopicとActivityへ表示します。個人情報を最小化する場合は`count`または`disabled`を選んでください。
+
+## 個人情報と削除
+
+DBにはDiscord user ID、履歴上の表示名、活動時刻、任意の備考、任意の本名・役割・代・名前の読みを保存します。運用者はDBとバックアップへのアクセスを制限し、利用者へ保存目的と保持期間を説明してください。
+
+- `/attendanceexport clearuserconfig`: 本名などのプロフィール情報だけを解除します。
+- `/attendance erase confirmation:DELETE`: 本人の全セッション、変更履歴、確認要求、自動終了イベント、プロフィールを稼働DBから物理削除します。
+- 通常の`/attendance delete`は取り消し可能にするため論理削除です。
+
+完全消去後も、保持期間内のバックアップや、過去にDiscordへ公開したCSV・PDFには情報が残り得ます。運用者はバックアップ保持期限とDiscord上の削除手順を定めてください。
+
+月次exportは既定で`preview`となり、実行者だけへ送信します。`publish`では全員分の本名と活動時間を公開するため、`confirm_public:true`の明示指定が必要で、実行を監査ログへ記録します。
+
+## バックアップ
+
+`attendance-maintenance`はDiscord tokenを読み取らず、SQLiteの`VACUUM INTO`で稼働中DBの整合したスナップショットを作成します。作成後に`PRAGMA integrity_check`とmigration metadataを検査し、成功した場合だけ最終ファイル名へ変更します。既存ファイルは上書きしません。
+
+ソース実行例:
+
+```powershell
+New-Item -ItemType Directory -Force backups
+$backupStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+cargo run --locked --release --bin attendance-maintenance -- backup attendance.db "backups\attendance-$backupStamp.db"
+cargo run --locked --release --bin attendance-maintenance -- verify "backups\attendance-$backupStamp.db"
+```
+
+Docker例:
+
+```powershell
+$backupStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+docker compose run --rm maintenance backup /data/attendance.db "/backups/attendance-$backupStamp.db"
+docker compose run --rm maintenance verify "/backups/attendance-$backupStamp.db"
+```
+
+Composeの`maintenance` serviceには`.env`を渡さないため、保守コマンドの環境へBot tokenは注入されません。
+
+少なくとも日次バックアップ、複数世代保持、別ホストへの暗号化コピー、定期的な復元訓練を設定してください。必要な復旧時点と許容停止時間に合わせてRPO・RTOを決めます。
+
+## 復元
+
+復元は必ずBot停止中に実施します。
+
+1. Botを停止します。
+2. 復元対象バックアップを`verify`します。
+3. 現在のDBと対応する`-wal`・`-shm`を、同じ復旧用ディレクトリへまとめて退避します。DBとWALを分離して使い回してはいけません。
+4. 元のDBパスが存在しない状態で`restore`を実行します。保守コマンドは既存パスを上書きしません。
+5. 復元DBをもう一度`verify`します。
+6. 可能ならテストGuildで起動確認してから本番Botを再開します。
+
+```powershell
+cargo run --locked --release --bin attendance-maintenance -- restore backups\attendance-YYYYMMDD-HHMMSS.db attendance.db
+cargo run --locked --release --bin attendance-maintenance -- verify attendance.db
+```
+
+## 更新とmigration
+
+- 更新前に検証済みバックアップを取得します。
+- 公開済みmigrationファイルは変更せず、schema変更は新しい連番migrationとして追加します。
+- `sqlx::migrate!`が起動時に未適用migrationを実行します。
+- ロールバックが必要な場合は、Botを停止して更新前バックアップから復元します。
+- `v0.0`の試験DBと現在のv1 schemaには移行互換性がありません。旧DBを本番データとして使用している場合は、自動削除せず個別に移行計画を作成してください。
+
+## データベース設計
+
+- `attendance_sessions`: 活動記録。通常削除はsoft delete
+- `attendance_changes`: 取り消し可能な変更履歴
+- `pending_attendance_actions`: edit、delete、revertの確認要求
+- `attendance_auto_end_events`: 自動終了・通知・訂正状態
+- `attendance_user_profiles`: 任意の代、本名、役割、名前の読み
+
+所有者を含む複合外部キー、同一ユーザーの区間重複を防ぐtrigger、`BEGIN IMMEDIATE`相当のwrite transaction、busy timeoutを使用します。詳細仕様は[仕様書](./SPECIFICATION.html)を参照してください。
+
+## 開発と検証
 
 ```powershell
 cargo fmt --check
-cargo test
-cargo test --doc
-cargo clippy --all-targets --all-features -- -D warnings
-cargo doc --no-deps
+cargo test --locked
+cargo test --locked --doc
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo doc --locked --no-deps
 cargo audit --deny warnings
+cargo package --locked
+docker build --tag discord-attendance-bot:local .
 ```
 
-同じ検査はGitHub ActionsでUbuntu・Windows・macOSの3環境に対して実行する。
+GitHub ActionsではRust 1.94を使い、Ubuntu、Windows、macOSで検査します。`cargo run`はDiscordへ接続するため、自動テストでは実行しません。
 
-## データベース
+## セキュリティ報告とコントリビューション
 
-テスト環境では `attendance-test.db`、本番環境では `attendance-release.db` が作成される。WAL modeを使用するため、実行中はそれぞれのDBに対応する `-wal` と `-shm` ファイルが存在する場合がある。
+脆弱性は公開Issueへ秘密値やDBを添付せず、[SECURITY.md](./SECURITY.md)の手順で報告してください。開発参加方法は[CONTRIBUTING.md](./CONTRIBUTING.md)、変更履歴は[CHANGELOG.md](./CHANGELOG.md)を参照してください。
 
-v1.0の初期schemaは `migrations/0001_initial_schema.sql` に集約し、次の責務ごとにテーブルを分ける。セッションには現在の連続活動開始点 `open_since` を保持し、自動終了後の `continue` も次の自動終了期限を正しく計算する。所有者を含む複合外部キーとtriggerにより、他ユーザーの記録参照および同一ユーザーの活動区間重複をDB層でも拒否する。
+## License
 
-- `attendance_sessions`: 活動記録
-- `attendance_changes`: 取り消し可能な変更履歴
-- `pending_attendance_actions`: `edit`、`delete`、`revert` の確認要求
-- `attendance_auto_end_events`: 21時自動終了、適用時点の変更履歴境界、通知・訂正状態
-- `attendance_user_profiles`: 代、本名、役割、名簿用の名前の読みの設定
-
-バックアップは Bot 停止中に、起動モードが選択した `DATABASE_URL_TEST` または `DATABASE_URL_RELEASE` のDBファイルをコピーするのが簡単である。稼働中に取得する場合は SQLite CLI の `.backup` または `VACUUM INTO` を使用する。
-
-```sql
-VACUUM INTO 'attendance-backup.db';
-```
-
-## 挙動上の注意
-
-- 重複 `start` は既存の活動中記録を表示し、DBを変更しない。
-- 重複 `end` は直近の終了済み記録を表示し、DBを変更しない。
-- `continue` は直近の終了済み記録の終了時刻を取り消す。
-- `edit`、`delete`、`revert` は最初に変更内容をプレビューし、5分間有効な5文字の確認IDを発行する。`/attendance confirm id:<ID>` で確定するまで DB は変更しない。
-- `revert` は直前の成功した変更操作を1件だけ取り消す。`start` は作成記録を soft delete、`end` は終了前、`continue` は continue 前、`edit` は編集前、`delete` は削除前へ復元する。`revert` 自体は操作履歴に積まれないため、1回確定した後に再度 `revert` → `confirm` を行えば、過去の変更を順に取り消せる。対象がなければ安全な no-op とする。
-- 確認前に別の変更が入った場合、プレビュー時の状態と一致しない、または `revert` 対象が最新操作ではなくなるため、安全のため確定しない。確認IDは使用済みになる。
-- `edit` で `end` を空文字として入力すると活動中へ戻せる。ただし、別の活動中記録がある場合は拒否する。
-- `delete` は confirm で確定し、DB上では soft delete する。
-- 同一ユーザーの削除されていない活動記録どうしは、終了済み記録を含めて時間区間を重複させられない。`start`、`continue`、`edit`、`revert`、確認中の競合で重複が生じる場合は安全に拒否する。
-- 状態の読み取りから更新までを伴う操作は SQLite の即時write transactionで直列化し、WALの競合にはbusy timeoutと限定的な再試行を使用する。
-- `/attendance help` で利用可能なコマンドと引数を確認できる。
-- 月次集計は月境界および日境界で分割し、日本時間基準で算出する。
-- `/attendance month` は合計・活動回数・1回あたり平均に加え、1日あたり平均と1週間あたり平均を表示する。当月は今日を含む経過暦日数、過去月はその月の全日数を分母とし、未来月は分母0として平均0を表示する。活動日のみの日数ではない。
-- `/attendanceexport export month:YYYY-MM` で指定月のDiscord表示名あり版・本名のみ版の CSV と PDF（計4ファイル）を出力できる。`month` は必須で、`mode` は `preview`（既定、本人のみ）または `publish`（全員に公開）を指定する。全メンバーの本名を含み得るため実行者にはDiscordの「サーバー管理」権限が必要で、Botにはメッセージ送信・Embed・ファイル添付権限が必要である。
-- `/attendanceexport userconfig` は実行者の代（整数）、本名、役割を設定する。引数なしでは現在値をEmbed表示し、一部の引数だけを指定した場合はほかの設定を保持する。
-- エクスポート表は、縦方向がユーザー、横方向が対象月の日付と合計列である。Discord表示名あり版のCSVには代・本名・役割・Discord表示名を独立した列として含め、PDFには設定内容をユーザー情報欄へまとめて表示する。本名のみ版にはDiscord表示名を含めない。対象月が未終了の場合と翌月1日の出力には、暫定集計・修正可能性の注記を付ける。
-
-## 月次ファイル出力
-
-`/attendanceexport help` で操作方法を確認できる。4ファイルは同じ月次データから生成し、活動時間があるセルは `時間:分` 形式で表示する。PDFの0時間セルは空欄、CSVの0時間セルは `0:00` と表示する。CSVのユーザー入力列は、表計算ソフトで数式として解釈される危険な先頭文字を無害化してからCSV構文としてescapeする。現在活動中の記録は出力時点までを暫定値として含める。PDFのセル文字は上下中央揃えとし、長い代・本名・役割・Discord表示名は省略せず折り返しと文字サイズ調整を行い、月の日数と利用者数に応じて改ページする。
-
-Discord interactionから得た添付上限を生成後・送信前に検査する。`publish` でも処理開始・成功確認・エラーは本人だけに表示し、CSV・PDFの生成に成功した場合だけ別の公開メッセージを送る。一度公開したDiscordメッセージをBotが自動的に取り消す機能ではない。
-
-PDF は `printpdf` を使用する。表の配置と改ページは Bot 側で明示的に制御し、`PdfSaveOptions.subset_fonts = true` を必ず指定して、実際に使用した文字のグリフだけを TTF から埋め込む。CJK フォント全体を埋め込むと添付サイズが大きくなりやすいため、この方針を採用した。日本語フォントは環境依存のため、`ATTENDANCE_PDF_FONT_PATH` で TTF を指定できる。未指定時は Noto Sans JP、Windows の日本語フォントなど既定候補を検索する。
-
-`genpdf` は高レベルな表 API が便利だが、フォントを複数登録する設計では使用文字だけの埋め込みを明示しにくいため採用しない。`lopdf` / `lopdf-table` は PDF 構造や表の細かな後処理が必要になった場合の候補とする。
-
-## ディレクトリ
-
-```text
-src/
-├── main.rs
-├── lib.rs
-├── config.rs
-├── channel_status.rs
-├── framework_error.rs
-├── commands/
-│   ├── attendance.rs
-│   ├── attendance/
-│   │   ├── common.rs
-│   │   ├── daily.rs
-│   │   ├── guarded.rs
-│   │   └── query.rs
-│   └── attendance_export.rs
-├── attendance/
-│   ├── aggregation.rs
-│   ├── model.rs
-│   └── service.rs
-├── attendance_export.rs
-├── attendance_export/
-│   └── pdf.rs
-├── repository/
-│   ├── model.rs
-│   ├── session.rs
-│   ├── change.rs
-│   ├── confirmation.rs
-│   ├── auto_end.rs
-│   ├── profile.rs
-│   ├── transaction.rs
-│   └── tests.rs
-├── presentation/
-│   ├── mod.rs
-│   ├── embeds.rs
-│   └── status_topic.rs
-└── time.rs
-migrations/
-└── 0001_initial_schema.sql
-SPECIFICATION.html
-```
-
-`main.rs` は起動と依存関係の組み立て、`commands` はDiscord interaction、`attendance` は時刻計算を含むdomain logic、`repository` は責務別のSQLite操作、`presentation` はEmbedとステータス表示、`framework_error.rs` は利用者向けエラー分類を担当する。
-
-詳細仕様は [SPECIFICATION.html](./SPECIFICATION.html) を参照する。
+[MIT License](./LICENSE)

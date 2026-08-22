@@ -102,7 +102,14 @@ pub(super) async fn refresh_status_activity(ctx: Context<'_>, reason: &'static s
     match channel_status::refresh_activity(
         ctx.serenity_context(),
         &ctx.data().database,
-        guild_id.get() as i64,
+        match i64::try_from(guild_id.get()) {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::warn!(%error, reason, guild_id = guild_id.get(), "guild ID exceeds SQLite range");
+                return;
+            }
+        },
+        ctx.data().status.mode,
     )
     .await
     {

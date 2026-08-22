@@ -7,11 +7,11 @@ use sqlx::SqlitePool;
 
 use crate::{
     attendance::AttendanceSession,
+    config::{StatusConfig, StatusMode},
     presentation::{activity_status, status_topic},
     repository,
 };
 
-const TOPIC_REFRESH_INTERVAL: Duration = Duration::from_secs(600);
 const AUTO_END_RETRY_DELAY: Duration = Duration::from_secs(60);
 const STARTUP_RETRY_INITIAL_DELAY: Duration = Duration::from_secs(1);
 static STATUS_REFRESH_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
@@ -101,10 +101,15 @@ pub async fn refresh_activity(
     ctx: &serenity::Context,
     pool: &SqlitePool,
     guild_id: i64,
+    mode: StatusMode,
 ) -> anyhow::Result<usize> {
+    if !mode.is_enabled() {
+        ctx.set_activity(None);
+        return Ok(0);
+    }
     let _guard = status_refresh_lock().lock().await;
     let sessions = load_active_sessions(pool, guild_id).await?;
-    let activity = activity_status(&sessions, Utc::now().timestamp());
+    let activity = activity_status(&sessions, Utc::now().timestamp(), mode.shows_names());
     ctx.set_activity(Some(serenity::ActivityData::watching(activity)));
     Ok(sessions.len())
 }
@@ -113,14 +118,21 @@ pub async fn refresh_status(
     ctx: &serenity::Context,
     pool: &SqlitePool,
     guild_id: i64,
-    channel_id: u64,
+    status: StatusConfig,
 ) -> anyhow::Result<usize> {
+    if !status.mode.is_enabled() {
+        ctx.set_activity(None);
+        return Ok(0);
+    }
+    let channel_id = status
+        .channel_id
+        .context("status channel is not configured")?;
     let _guard = status_refresh_lock().lock().await;
     let sessions = load_active_sessions(pool, guild_id).await?;
-    let activity = activity_status(&sessions, Utc::now().timestamp());
+    let activity = activity_status(&sessions, Utc::now().timestamp(), status.mode.shows_names());
     ctx.set_activity(Some(serenity::ActivityData::watching(activity)));
 
-    let topic = status_topic(&sessions, Utc::now().timestamp());
+    let topic = status_topic(&sessions, Utc::now().timestamp(), status.mode.shows_names());
     tracing::info!(
         guild_id,
         channel_id,
@@ -140,19 +152,21 @@ pub fn spawn_periodic_refresh(
     ctx: &serenity::Context,
     pool: SqlitePool,
     guild_id: i64,
-    channel_id: u64,
+    status: StatusConfig,
 ) {
     let ctx = ctx.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(TOPIC_REFRESH_INTERVAL);
+        let mut interval =
+            tokio::time::interval(Duration::from_secs(status.refresh_interval_seconds));
         loop {
             interval.tick().await;
+            let channel_id = status.channel_id.unwrap_or_default();
             tracing::info!(
                 guild_id,
                 channel_id,
                 "started periodic attendance status refresh"
             );
-            match refresh_status(&ctx, &pool, guild_id, channel_id).await {
+            match refresh_status(&ctx, &pool, guild_id, status).await {
                 Ok(active_count) => {
                     tracing::info!(
                         guild_id,
@@ -174,7 +188,12 @@ pub fn spawn_periodic_refresh(
     });
 }
 
-pub fn spawn_auto_end_scheduler(ctx: &serenity::Context, pool: SqlitePool, guild_id: i64) {
+pub fn spawn_auto_end_scheduler(
+    ctx: &serenity::Context,
+    pool: SqlitePool,
+    guild_id: i64,
+    status_mode: StatusMode,
+) {
     let ctx = ctx.clone();
     tokio::spawn(async move {
         loop {
@@ -208,7 +227,7 @@ pub fn spawn_auto_end_scheduler(ctx: &serenity::Context, pool: SqlitePool, guild
             );
             // Refresh even when no row was closed: this also clears an old
             // Discord activity after an external/manual state correction.
-            if let Err(error) = refresh_activity(&ctx, &pool, guild_id).await {
+            if let Err(error) = refresh_activity(&ctx, &pool, guild_id, status_mode).await {
                 tracing::warn!(%error, guild_id, "failed to refresh activity after automatic end");
             }
         }

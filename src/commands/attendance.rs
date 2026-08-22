@@ -1,12 +1,14 @@
 mod common;
 mod daily;
 mod guarded;
+mod privacy;
 mod query;
 
 use crate::{Context, Error};
 
 pub use daily::{continue_activity, end, exit, join, start};
 pub use guarded::{confirm, delete, edit, revert};
+pub use privacy::erase;
 pub use query::{help, history, list, month, status};
 
 /// 活動時間の記録・確認・修正を行う。
@@ -24,6 +26,7 @@ pub use query::{help, history, list, month, status};
         "month",
         "edit",
         "delete",
+        "erase",
         "help"
     ),
     subcommand_required
@@ -45,7 +48,7 @@ mod tests {
                 .as_deref()
                 .is_some_and(|value| value != "A slash command")
         );
-        assert_eq!(command.subcommands.len(), 12);
+        assert_eq!(command.subcommands.len(), 13);
         for subcommand in command.subcommands {
             assert!(
                 subcommand

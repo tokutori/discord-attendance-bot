@@ -103,6 +103,7 @@ pub fn build_monthly_export(
     profiles: &[UserProfile],
     now: DateTime<Utc>,
 ) -> anyhow::Result<MonthlyExport> {
+    let timezone = time::display_timezone();
     let (range_start, range_end) = time::month_bounds(year_month)?;
     let first_date = NaiveDate::from_ymd_opt(year_month.year, year_month.month, 1)
         .ok_or_else(|| anyhow::anyhow!("invalid export month"))?;
@@ -156,7 +157,7 @@ pub fn build_monthly_export(
         while cursor < effective_end {
             let local = DateTime::<Utc>::from_timestamp(cursor, 0)
                 .ok_or_else(|| anyhow::anyhow!("invalid session timestamp"))?
-                .with_timezone(&time::DISPLAY_TIMEZONE);
+                .with_timezone(&timezone);
             let date = local.date_naive();
             let Some(day_index): Option<usize> = date
                 .signed_duration_since(first_date)
@@ -174,7 +175,7 @@ pub fn build_monthly_export(
                 .ok_or_else(|| anyhow::anyhow!("invalid next calendar date"))?
                 .and_hms_opt(0, 0, 0)
                 .ok_or_else(|| anyhow::anyhow!("invalid local midnight"))?;
-            let next_midnight = time::DISPLAY_TIMEZONE
+            let next_midnight = timezone
                 .from_local_datetime(&next_midnight_local)
                 .single()
                 .ok_or_else(|| anyhow::anyhow!("invalid local midnight"))?
@@ -187,7 +188,7 @@ pub fn build_monthly_export(
         }
     }
 
-    let local_now = now.with_timezone(&time::DISPLAY_TIMEZONE);
+    let local_now = now.with_timezone(&timezone);
     let mut notices = Vec::new();
     if now.timestamp() < range_end {
         notices

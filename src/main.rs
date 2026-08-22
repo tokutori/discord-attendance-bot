@@ -3,7 +3,9 @@
 use std::{env, str::FromStr, time::Duration};
 
 use anyhow::Context as _;
-use discord_attendance_bot::{Data, channel_status, commands, config, framework_error};
+use discord_attendance_bot::{
+    Data, channel_status, commands, config, database, framework_error, time,
+};
 use poise::serenity_prelude as serenity;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use tracing::info;
@@ -15,7 +17,13 @@ async fn main() -> anyhow::Result<()> {
     let mode = config::parse_mode(&args)?;
     let app_config = config::AppConfig::from_env(mode)?;
     let guild_id = app_config.guild_id;
-    let status_channel_id = app_config.status_channel_id;
+    let guild_database_id = i64::try_from(guild_id).context("guild ID exceeds SQLite range")?;
+    let status = app_config.status;
+    let auto_end_enabled = app_config.auto_end_time.is_some();
+    time::install_time_policy(time::TimePolicy {
+        timezone: app_config.timezone,
+        auto_end_time: app_config.auto_end_time,
+    })?;
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -24,10 +32,14 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    let synchronous = match app_config.database_synchronous {
+        config::DatabaseSynchronous::Full => SqliteSynchronous::Full,
+        config::DatabaseSynchronous::Normal => SqliteSynchronous::Normal,
+    };
     let options = SqliteConnectOptions::from_str(&app_config.database_url)?
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
-        .synchronous(SqliteSynchronous::Normal)
+        .synchronous(synchronous)
         .busy_timeout(Duration::from_secs(5))
         .foreign_keys(true);
     let database = SqlitePoolOptions::new()
@@ -35,6 +47,8 @@ async fn main() -> anyhow::Result<()> {
         .connect_with(options)
         .await
         .context("failed to open SQLite database")?;
+    let sqlite_version = database::validate_runtime_sqlite(&database).await?;
+    info!(%sqlite_version, "validated SQLite runtime version");
     sqlx::migrate!("./migrations").run(&database).await?;
 
     let framework = poise::Framework::builder()
@@ -71,42 +85,49 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .await?;
                 info!(mode = mode.as_str(), guild_id, "registered guild commands");
-                match channel_status::apply_missed_auto_ends(&database, guild_id as i64).await {
-                    Ok(count) if count > 0 => {
-                        info!(guild_id, count, "applied missed automatic attendance ends");
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        tracing::error!(%error, guild_id, "failed to apply missed automatic attendance ends");
+                if auto_end_enabled {
+                    match channel_status::apply_missed_auto_ends(&database, guild_database_id).await {
+                        Ok(count) if count > 0 => {
+                            info!(guild_id, count, "applied missed automatic attendance ends");
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            tracing::error!(%error, guild_id, "failed to apply missed automatic attendance ends");
+                        }
                     }
                 }
-                if let Err(error) = channel_status::refresh_status(
-                    ctx,
-                    &database,
-                    guild_id as i64,
-                    status_channel_id,
-                )
-                .await
-                {
-                    tracing::warn!(
-                        %error,
-                        guild_id,
-                        status_channel_id,
-                        "failed to refresh activity and status topic after startup recovery"
+                if status.mode.is_enabled() {
+                    if let Err(error) = channel_status::refresh_status(
+                        ctx,
+                        &database,
+                        guild_database_id,
+                        status,
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            %error,
+                            guild_id,
+                            status_channel_id = status.channel_id,
+                            "failed to refresh activity and status topic after startup recovery"
+                        );
+                    }
+                    channel_status::spawn_periodic_refresh(
+                        ctx,
+                        database.clone(),
+                        guild_database_id,
+                        status,
                     );
                 }
-                channel_status::spawn_auto_end_scheduler(
-                    ctx,
-                    database.clone(),
-                    guild_id as i64,
-                );
-                channel_status::spawn_periodic_refresh(
-                    ctx,
-                    database.clone(),
-                    guild_id as i64,
-                    status_channel_id,
-                );
-                Ok(Data { database })
+                if auto_end_enabled {
+                    channel_status::spawn_auto_end_scheduler(
+                        ctx,
+                        database.clone(),
+                        guild_database_id,
+                        status.mode,
+                    );
+                }
+                Ok(Data { database, status })
             })
         })
         .build();

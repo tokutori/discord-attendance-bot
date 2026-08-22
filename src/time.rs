@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use chrono::{DateTime, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use chrono_tz::{Asia::Tokyo, Tz};
 use thiserror::Error;
@@ -6,13 +8,44 @@ use crate::attendance::YearMonth;
 
 pub const DISPLAY_TIMEZONE: Tz = Tokyo;
 
+#[derive(Debug, Clone, Copy)]
+pub struct TimePolicy {
+    pub timezone: Tz,
+    pub auto_end_time: Option<NaiveTime>,
+}
+
+impl Default for TimePolicy {
+    fn default() -> Self {
+        Self {
+            timezone: DISPLAY_TIMEZONE,
+            auto_end_time: NaiveTime::from_hms_opt(21, 0, 0),
+        }
+    }
+}
+
+static TIME_POLICY: OnceLock<TimePolicy> = OnceLock::new();
+
+pub fn install_time_policy(policy: TimePolicy) -> anyhow::Result<()> {
+    TIME_POLICY
+        .set(policy)
+        .map_err(|_| anyhow::anyhow!("time policy is already configured"))
+}
+
+pub fn time_policy() -> TimePolicy {
+    TIME_POLICY.get().copied().unwrap_or_default()
+}
+
+pub fn display_timezone() -> Tz {
+    time_policy().timezone
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ParseTimeError {
     #[error("時刻は HH:MM 形式で指定する必要がある")]
     InvalidTime,
     #[error("日時は YYYY-MM-DD HH:MM 形式で指定する必要がある")]
     InvalidDateTime,
-    #[error("指定した日時を日本時間として解釈できない")]
+    #[error("指定した日時を設定されたタイムゾーンで解釈できない")]
     AmbiguousOrInvalidLocalTime,
 }
 
@@ -44,7 +77,11 @@ pub fn parse_year_month(input: &str) -> Result<YearMonth, ParseYearMonthError> {
 }
 
 fn local_to_timestamp(value: NaiveDateTime) -> Result<i64, ParseTimeError> {
-    match DISPLAY_TIMEZONE.from_local_datetime(&value) {
+    local_to_timestamp_in(display_timezone(), value)
+}
+
+fn local_to_timestamp_in(timezone: Tz, value: NaiveDateTime) -> Result<i64, ParseTimeError> {
+    match timezone.from_local_datetime(&value) {
         LocalResult::Single(dt) => Ok(dt.timestamp()),
         _ => Err(ParseTimeError::AmbiguousOrInvalidLocalTime),
     }
@@ -53,14 +90,16 @@ fn local_to_timestamp(value: NaiveDateTime) -> Result<i64, ParseTimeError> {
 pub fn parse_today_time(input: &str, now_utc: DateTime<Utc>) -> Result<i64, ParseTimeError> {
     let time =
         NaiveTime::parse_from_str(input, "%H:%M").map_err(|_| ParseTimeError::InvalidTime)?;
-    let date = now_utc.with_timezone(&DISPLAY_TIMEZONE).date_naive();
+    let timezone = display_timezone();
+    let date = now_utc.with_timezone(&timezone).date_naive();
     local_to_timestamp(date.and_time(time))
 }
 
 pub fn parse_most_recent_time(input: &str, now_utc: DateTime<Utc>) -> Result<i64, ParseTimeError> {
     let time =
         NaiveTime::parse_from_str(input, "%H:%M").map_err(|_| ParseTimeError::InvalidTime)?;
-    let local_now = now_utc.with_timezone(&DISPLAY_TIMEZONE);
+    let timezone = display_timezone();
+    let local_now = now_utc.with_timezone(&timezone);
     let mut date = local_now.date_naive();
     let today = local_to_timestamp(date.and_time(time))?;
     if today <= now_utc.timestamp() {
@@ -79,9 +118,10 @@ pub fn parse_full_datetime(input: &str) -> Result<i64, ParseTimeError> {
 }
 
 pub fn format_datetime(timestamp: i64) -> String {
+    let timezone = display_timezone();
     DateTime::<Utc>::from_timestamp(timestamp, 0)
         .map(|dt| {
-            dt.with_timezone(&DISPLAY_TIMEZONE)
+            dt.with_timezone(&timezone)
                 .format("%Y年%-m月%-d日 %H:%M")
                 .to_string()
         })
@@ -90,8 +130,9 @@ pub fn format_datetime(timestamp: i64) -> String {
 
 /// Formats a persisted interval without panicking on an invalid timestamp.
 pub fn format_history_range(started_at: i64, ended_at: Option<i64>) -> String {
-    let Some(start) = DateTime::<Utc>::from_timestamp(started_at, 0)
-        .map(|value| value.with_timezone(&DISPLAY_TIMEZONE))
+    let timezone = display_timezone();
+    let Some(start) =
+        DateTime::<Utc>::from_timestamp(started_at, 0).map(|value| value.with_timezone(&timezone))
     else {
         return "不正な時刻".into();
     };
@@ -101,8 +142,8 @@ pub fn format_history_range(started_at: i64, ended_at: Option<i64>) -> String {
             if end < started_at {
                 return "不正な時刻".into();
             }
-            let Some(end) = DateTime::<Utc>::from_timestamp(end, 0)
-                .map(|value| value.with_timezone(&DISPLAY_TIMEZONE))
+            let Some(end) =
+                DateTime::<Utc>::from_timestamp(end, 0).map(|value| value.with_timezone(&timezone))
             else {
                 return "不正な時刻".into();
             };
@@ -177,7 +218,8 @@ pub fn month_bounds(ym: YearMonth) -> anyhow::Result<(i64, i64)> {
 
 /// Computes the next midnight in the display timezone.
 pub fn next_midnight_timestamp(now: DateTime<Utc>) -> anyhow::Result<i64> {
-    let local_date = now.with_timezone(&DISPLAY_TIMEZONE).date_naive();
+    let timezone = display_timezone();
+    let local_date = now.with_timezone(&timezone).date_naive();
     let next_date = local_date
         .succ_opt()
         .ok_or_else(|| anyhow::anyhow!("could not calculate next local date"))?;
@@ -208,18 +250,26 @@ pub fn next_midnight_timestamp(now: DateTime<Utc>) -> anyhow::Result<i64> {
 /// assert_eq!(auto_end_timestamp(started, after_midnight), Some(started + 3 * 3600));
 /// ```
 pub fn auto_end_timestamp(started_at: i64, now: DateTime<Utc>) -> Option<i64> {
-    let started = DateTime::<Utc>::from_timestamp(started_at, 0)?.with_timezone(&DISPLAY_TIMEZONE);
-    let local_now = now.with_timezone(&DISPLAY_TIMEZONE);
+    auto_end_timestamp_with_policy(started_at, now, time_policy())
+}
+
+fn auto_end_timestamp_with_policy(
+    started_at: i64,
+    now: DateTime<Utc>,
+    policy: TimePolicy,
+) -> Option<i64> {
+    let cutoff_time = policy.auto_end_time?;
+    let started = DateTime::<Utc>::from_timestamp(started_at, 0)?.with_timezone(&policy.timezone);
+    let local_now = now.with_timezone(&policy.timezone);
     if started.date_naive() >= local_now.date_naive() {
         return None;
     }
-    let cutoff_time = NaiveTime::from_hms_opt(21, 0, 0)?;
     let cutoff_date = if started.time() < cutoff_time {
         started.date_naive()
     } else {
         started.date_naive().succ_opt()?
     };
-    let cutoff = local_to_timestamp(cutoff_date.and_time(cutoff_time)).ok()?;
+    let cutoff = local_to_timestamp_in(policy.timezone, cutoff_date.and_time(cutoff_time)).ok()?;
     (cutoff <= now.timestamp()).then_some(cutoff)
 }
 
@@ -333,6 +383,35 @@ mod tests {
                     .unwrap()
                     .timestamp()
             )
+        );
+    }
+
+    #[test]
+    fn applies_custom_timezone_and_cutoff_without_global_state() {
+        let policy = TimePolicy {
+            timezone: chrono_tz::UTC,
+            auto_end_time: NaiveTime::from_hms_opt(17, 30, 0),
+        };
+        let started = Utc.with_ymd_and_hms(2026, 8, 8, 10, 0, 0).unwrap();
+        let next_day = Utc.with_ymd_and_hms(2026, 8, 9, 0, 0, 1).unwrap();
+        assert_eq!(
+            auto_end_timestamp_with_policy(started.timestamp(), next_day, policy),
+            Some(
+                Utc.with_ymd_and_hms(2026, 8, 8, 17, 30, 0)
+                    .unwrap()
+                    .timestamp()
+            )
+        );
+        assert_eq!(
+            auto_end_timestamp_with_policy(
+                started.timestamp(),
+                next_day,
+                TimePolicy {
+                    auto_end_time: None,
+                    ..policy
+                }
+            ),
+            None
         );
     }
 }

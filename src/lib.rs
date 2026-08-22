@@ -5,7 +5,9 @@ pub mod attendance_export;
 pub mod channel_status;
 pub mod commands;
 pub mod config;
+pub mod database;
 pub mod framework_error;
+pub mod maintenance;
 pub mod member_order;
 pub mod presentation;
 pub mod repository;
@@ -16,6 +18,7 @@ use sqlx::SqlitePool;
 
 pub struct Data {
     pub database: SqlitePool,
+    pub status: config::StatusConfig,
 }
 
 pub type Error = anyhow::Error;
