@@ -20,7 +20,7 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v6
       - name: Install minimum supported Rust toolchain
-        uses: dtolnay/rust-toolchain@1.94.0
+        uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: rustfmt, clippy
       - name: Cache Cargo artifacts
@@ -52,7 +52,7 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v6
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.94.0
+        uses: dtolnay/rust-toolchain@1.100.0
       - name: Install cargo-audit
         run: cargo install cargo-audit --version 0.22.2 --locked
       - name: Audit dependencies
