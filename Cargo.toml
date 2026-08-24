@@ -21,7 +21,7 @@ poise = { version = "0.6.2", default-features = false, features = ["cache", "chr
 # The exporter writes PDF operations directly and does not use printpdf's
 # optional HTML/text-layout stack. Keeping those features disabled avoids
 # pulling the GUI layout dependency tree into the bot.
-printpdf = { version = "=0.11.3", default-features = false }
+printpdf = { version = "=0.12.6", default-features = false }
 # Poiseの既定rustls backendではなく、Serenityへ安全なTLS backendを明示的に供給する。
 serenity = { version = "0.12.5", default-features = false, features = ["native_tls_backend"] }
 serde = { version = "1.0", features = ["derive"] }
