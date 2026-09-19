@@ -12,16 +12,19 @@ readme = "README.md"
 keywords = ["discord", "attendance", "bot", "sqlite"]
 categories = ["command-line-utilities"]
 
-[dependencies]
+publish = false
+
+[workspace]
+members = ["crates/attendance-shared", "crates/attendance-query", "crates/attendance-view"]
+default-members = [".", "crates/attendance-shared", "crates/attendance-query", "crates/attendance-view"]
+resolver = "3"
+
+[workspace.dependencies]
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["clock"] }
 chrono-tz = "0.10"
 dotenvy = "0.15"
 poise = { version = "0.6.2", default-features = false, features = ["cache", "chrono", "handle_panics"] }
-# The exporter writes PDF operations directly and does not use printpdf's
-# optional HTML/text-layout stack. Keeping those features disabled avoids
-# pulling the GUI layout dependency tree into the bot.
-printpdf = { version = "=0.11.3", default-features = false }
 # Poiseの既定rustls backendではなく、Serenityへ安全なTLS backendを明示的に供給する。
 serenity = { version = "0.12.5", default-features = false, features = ["native_tls_backend"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -36,5 +39,24 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-normalization = "0.1"
 
-[dev-dependencies]
+printpdf = { version = "=0.11.3", default-features = false }
 tempfile = "3.20"
+attendance-shared = { path = "crates/attendance-shared" }
+attendance-query = { path = "crates/attendance-query" }
+
+[dependencies]
+attendance-shared.workspace = true
+attendance-query.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+dotenvy.workspace = true
+poise.workspace = true
+serenity.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

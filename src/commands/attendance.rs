@@ -1,15 +1,15 @@
 mod common;
 mod daily;
 mod guarded;
+mod help;
 mod privacy;
-mod query;
 
 use crate::{Context, Error};
 
 pub use daily::{continue_activity, end, exit, join, start};
 pub use guarded::{confirm, delete, edit, revert};
+pub use help::help;
 pub use privacy::erase;
-pub use query::{help, history, list, month, status};
 
 /// 活動時間の記録・確認・修正を行う。
 #[poise::command(
@@ -20,10 +20,6 @@ pub use query::{help, history, list, month, status};
         "continue_activity",
         "revert",
         "confirm",
-        "status",
-        "list",
-        "history",
-        "month",
         "edit",
         "delete",
         "erase",
@@ -48,7 +44,17 @@ mod tests {
                 .as_deref()
                 .is_some_and(|value| value != "A slash command")
         );
-        assert_eq!(command.subcommands.len(), 13);
+        assert_eq!(command.subcommands.len(), 9);
+        assert_eq!(
+            command
+                .subcommands
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "start", "end", "continue", "revert", "confirm", "edit", "delete", "erase", "help"
+            ]
+        );
         for subcommand in command.subcommands {
             assert!(
                 subcommand

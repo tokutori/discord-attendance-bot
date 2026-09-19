@@ -293,23 +293,7 @@ pub(super) async fn correct_auto_ended_session_in_tx(
     }))
 }
 
-pub async fn peek_auto_end_notice(
-    pool: &SqlitePool,
-    guild_id: i64,
-    user_id: i64,
-) -> Result<Option<AutoEndNotice>, sqlx::Error> {
-    sqlx::query_as::<_, AutoEndNoticeRow>(
-        "SELECT id, session_id, automatic_ended_at, applied_at, corrected_at
-         FROM attendance_auto_end_events
-         WHERE guild_id = ? AND user_id = ? AND notified_at IS NULL
-         ORDER BY applied_at ASC, id ASC LIMIT 1",
-    )
-    .bind(guild_id)
-    .bind(user_id)
-    .fetch_optional(pool)
-    .await
-    .map(|notice| notice.map(Into::into))
-}
+pub use attendance_query::sql::peek_auto_end_notice;
 
 pub async fn acknowledge_auto_end_notice(
     pool: &SqlitePool,
@@ -336,25 +320,4 @@ pub async fn acknowledge_auto_end_notice(
 struct AutoEndEventIdentity {
     id: i64,
     automatic_ended_at: i64,
-}
-
-#[derive(Debug, FromRow)]
-struct AutoEndNoticeRow {
-    id: i64,
-    session_id: i64,
-    automatic_ended_at: i64,
-    applied_at: i64,
-    corrected_at: Option<i64>,
-}
-
-impl From<AutoEndNoticeRow> for AutoEndNotice {
-    fn from(value: AutoEndNoticeRow) -> Self {
-        Self {
-            event_id: value.id,
-            session_id: value.session_id,
-            automatic_ended_at: value.automatic_ended_at,
-            applied_at: value.applied_at,
-            corrected_at: value.corrected_at,
-        }
-    }
 }

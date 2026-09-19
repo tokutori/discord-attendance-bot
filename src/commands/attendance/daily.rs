@@ -6,7 +6,7 @@ use crate::{
     time::{self, format_datetime, format_duration},
 };
 
-use super::common::{defer_ephemeral, ids, refresh_status_activity, send_response};
+use super::common::{defer_ephemeral, ids, send_response};
 
 fn now_and_optional_time(at: Option<&str>) -> Result<(i64, i64), Error> {
     let now = Utc::now();
@@ -59,7 +59,6 @@ async fn start_impl(
             text
         }
     };
-    refresh_status_activity(ctx, "start").await;
     send_response(ctx, content).await
 }
 
@@ -136,7 +135,6 @@ async fn end_impl(ctx: Context<'_>, at: Option<String>, note: Option<String>) ->
             "現在、活動中の記録はない。\n過去の活動記録も存在しない。".into()
         }
     };
-    refresh_status_activity(ctx, "end").await;
     send_response(ctx, content).await
 }
 
@@ -191,6 +189,5 @@ pub async fn continue_activity(ctx: Context<'_>) -> Result<(), Error> {
         ),
         ContinueOutcome::NothingToContinue => "継続できる直近の活動記録がない。".into(),
     };
-    refresh_status_activity(ctx, "continue").await;
     send_response(ctx, content).await
 }

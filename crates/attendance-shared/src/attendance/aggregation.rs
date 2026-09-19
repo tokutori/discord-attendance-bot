@@ -18,7 +18,7 @@ use crate::time::DISPLAY_TIMEZONE;
 /// # Examples
 ///
 /// ```
-/// use discord_attendance_bot::attendance::overlap_seconds;
+/// use attendance_shared::attendance::overlap_seconds;
 ///
 /// assert_eq!(overlap_seconds(90, 120, 0, 100), 10);
 /// assert_eq!(overlap_seconds(10, 20, 30, 40), 0);

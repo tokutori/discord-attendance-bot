@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- 記録プロセスと readonly 表示プロセスを分離。表示には別 Discord Application が必要。
+- status/list/history/month/export を `/attendanceview` へ移動。記録・プロフィール更新コマンドは維持。
+- 表示のみの更新・停止、readonly DB 接続、Docker 読み取り専用マウント、スキーマ互換性検査を追加。
+- 移行手順は [docs/process-separation.md](docs/process-separation.md) を参照。
+
 このプロジェクトの主な変更を記録します。形式は[Keep a Changelog](https://keepachangelog.com/ja/1.1.0/)を参考にし、versionはSemantic Versioningに従います。
 
 ## [Unreleased]

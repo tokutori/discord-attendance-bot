@@ -5,7 +5,7 @@ use crate::{
     time::{self, format_datetime},
 };
 
-use super::common::{defer_ephemeral, ids, refresh_status_activity, send_response};
+use super::common::{defer_ephemeral, ids, send_response};
 
 fn session_snapshot(session: &attendance::AttendanceSession) -> repository::SessionSnapshot {
     repository::SessionSnapshot {
@@ -255,7 +255,6 @@ pub async fn confirm(
         Utc::now().timestamp(),
     )
     .await?;
-    let changed = matches!(&result, repository::ConfirmationResult::Confirmed { .. });
     let content = match result {
         repository::ConfirmationResult::Confirmed {
             action,
@@ -286,8 +285,5 @@ pub async fn confirm(
             "プレビュー後に記録の状態が変わったため、安全のため確定しなかった。最新状態を確認してからやり直してほしい。".into()
         }
     };
-    if changed {
-        refresh_status_activity(ctx, "confirm").await;
-    }
     send_response(ctx, content).await
 }

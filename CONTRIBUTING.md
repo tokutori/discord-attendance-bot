@@ -8,9 +8,15 @@ Rust 1.94以上を使用してください。リポジトリの`rust-toolchain.t
 
 ```powershell
 cargo test --locked
-cargo fmt --check
-cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo fmt --all --check
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+python scripts/check-boundaries.py
 ```
+
+共通モデル・query・view を workspace crate に分離しています。`default-members` は全 crate です。
+記録 crate から view/PDF への依存、query/view から記録 service への依存を追加しないでください。
+実行アプリの workspace として `publish = false` にしており、`cargo package` による単一 crate 配布は行いません。
+ビルド・運用契約は [分離設計](docs/process-separation.md) を参照してください。
 
 ## Pull Request
 

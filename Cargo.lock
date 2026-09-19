@@ -129,6 +129,49 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "attendance-query"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "attendance-shared",
+ "sqlx",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "attendance-shared"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "chrono-tz",
+ "libsqlite3-sys",
+ "serde",
+ "sqlx",
+ "thiserror 2.0.20",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "attendance-view"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "attendance-query",
+ "attendance-shared",
+ "chrono",
+ "dotenvy",
+ "poise",
+ "printpdf",
+ "serenity",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -541,13 +584,11 @@ name = "discord-attendance-bot"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "attendance-query",
+ "attendance-shared",
  "chrono",
- "chrono-tz",
  "dotenvy",
- "libsqlite3-sys",
  "poise",
- "printpdf",
- "serde",
  "serenity",
  "sqlx",
  "tempfile",
@@ -555,7 +596,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "unicode-normalization",
 ]
 
 [[package]]

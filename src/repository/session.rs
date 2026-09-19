@@ -1,9 +1,13 @@
+pub use attendance_query::sql::{
+    active_attendance_members, active_sessions, get_owned, history, latest_completed, open_session,
+    overlapping_completed, overlapping_for_export,
+};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
 use crate::attendance::AttendanceSession;
 
 use super::{
-    ActiveAttendanceMember, ChangeOperation, EndSessionResult, SnapshotRow,
+    ChangeOperation, EndSessionResult, SnapshotRow,
     auto_end::{correct_auto_ended_session_in_tx, mark_active_auto_end_corrected},
     change::{ChangeInput, insert_change, snapshot},
     transaction::begin_immediate,
@@ -32,51 +36,6 @@ pub(super) async fn has_session_overlap(
     .bind(started_at)
     .fetch_one(&mut **tx)
     .await
-}
-
-pub async fn open_session(
-    pool: &SqlitePool,
-    guild_id: i64,
-    user_id: i64,
-) -> Result<Option<AttendanceSession>, sqlx::Error> {
-    sqlx::query_as("SELECT * FROM attendance_sessions WHERE guild_id = ? AND user_id = ? AND ended_at IS NULL AND deleted_at IS NULL LIMIT 1")
-        .bind(guild_id).bind(user_id).fetch_optional(pool).await
-}
-
-pub async fn active_sessions(
-    pool: &SqlitePool,
-    guild_id: i64,
-) -> Result<Vec<AttendanceSession>, sqlx::Error> {
-    sqlx::query_as("SELECT * FROM attendance_sessions WHERE guild_id = ? AND ended_at IS NULL AND deleted_at IS NULL ORDER BY started_at ASC")
-        .bind(guild_id)
-        .fetch_all(pool)
-        .await
-}
-
-pub async fn active_attendance_members(
-    pool: &SqlitePool,
-    guild_id: i64,
-) -> Result<Vec<ActiveAttendanceMember>, sqlx::Error> {
-    sqlx::query_as(
-        "SELECT sessions.user_id, sessions.display_name,
-                profiles.generation, profiles.real_name, profiles.role, profiles.name_reading
-         FROM attendance_sessions sessions
-         LEFT JOIN attendance_user_profiles profiles
-           ON profiles.guild_id = sessions.guild_id AND profiles.user_id = sessions.user_id
-         WHERE sessions.guild_id = ? AND sessions.ended_at IS NULL AND sessions.deleted_at IS NULL",
-    )
-    .bind(guild_id)
-    .fetch_all(pool)
-    .await
-}
-
-pub async fn latest_completed(
-    pool: &SqlitePool,
-    guild_id: i64,
-    user_id: i64,
-) -> Result<Option<AttendanceSession>, sqlx::Error> {
-    sqlx::query_as("SELECT * FROM attendance_sessions WHERE guild_id = ? AND user_id = ? AND ended_at IS NOT NULL AND deleted_at IS NULL ORDER BY ended_at DESC LIMIT 1")
-        .bind(guild_id).bind(user_id).fetch_optional(pool).await
 }
 
 pub async fn insert_session(
@@ -345,54 +304,4 @@ pub async fn reopen_session(
         tx.commit().await?;
     }
     Ok(result.rows_affected())
-}
-
-pub async fn history(
-    pool: &SqlitePool,
-    guild_id: i64,
-    user_id: i64,
-    limit: i64,
-) -> Result<Vec<AttendanceSession>, sqlx::Error> {
-    sqlx::query_as("SELECT * FROM attendance_sessions WHERE guild_id = ? AND user_id = ? AND deleted_at IS NULL ORDER BY CASE WHEN ended_at IS NULL THEN 0 ELSE 1 END, started_at DESC LIMIT ?")
-        .bind(guild_id).bind(user_id).bind(limit).fetch_all(pool).await
-}
-
-pub async fn get_owned(
-    pool: &SqlitePool,
-    id: i64,
-    guild_id: i64,
-    user_id: i64,
-) -> Result<Option<AttendanceSession>, sqlx::Error> {
-    sqlx::query_as("SELECT * FROM attendance_sessions WHERE id = ? AND guild_id = ? AND user_id = ? AND deleted_at IS NULL")
-        .bind(id).bind(guild_id).bind(user_id).fetch_optional(pool).await
-}
-
-pub async fn overlapping_completed(
-    pool: &SqlitePool,
-    guild_id: i64,
-    user_id: i64,
-    range_start: i64,
-    range_end: i64,
-) -> Result<Vec<AttendanceSession>, sqlx::Error> {
-    sqlx::query_as("SELECT * FROM attendance_sessions WHERE guild_id = ? AND user_id = ? AND deleted_at IS NULL AND ended_at IS NOT NULL AND started_at < ? AND ended_at > ? ORDER BY started_at ASC")
-        .bind(guild_id).bind(user_id).bind(range_end).bind(range_start).fetch_all(pool).await
-}
-
-pub async fn overlapping_for_export(
-    pool: &SqlitePool,
-    guild_id: i64,
-    range_start: i64,
-    range_end: i64,
-) -> Result<Vec<AttendanceSession>, sqlx::Error> {
-    sqlx::query_as(
-        "SELECT * FROM attendance_sessions
-         WHERE guild_id = ? AND deleted_at IS NULL
-           AND started_at < ? AND (ended_at IS NULL OR ended_at > ?)
-         ORDER BY user_id ASC, started_at ASC",
-    )
-    .bind(guild_id)
-    .bind(range_end)
-    .bind(range_start)
-    .fetch_all(pool)
-    .await
 }

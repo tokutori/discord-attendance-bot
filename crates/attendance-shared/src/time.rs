@@ -170,7 +170,7 @@ pub fn format_history_range(started_at: i64, ended_at: Option<i64>) -> String {
 /// # Examples
 ///
 /// ```
-/// use discord_attendance_bot::time::format_duration;
+/// use attendance_shared::time::format_duration;
 ///
 /// assert_eq!(format_duration(3_720), "1時間02分");
 /// assert_eq!(format_duration(-1), "0分");
@@ -234,7 +234,7 @@ pub fn next_midnight_timestamp(now: DateTime<Utc>) -> anyhow::Result<i64> {
 /// # Examples
 ///
 /// ```
-/// use discord_attendance_bot::time::{auto_end_timestamp, DISPLAY_TIMEZONE};
+/// use attendance_shared::time::{auto_end_timestamp, DISPLAY_TIMEZONE};
 ///
 /// use chrono::{TimeZone, Utc};
 ///

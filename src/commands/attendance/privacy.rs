@@ -1,7 +1,7 @@
 use crate::{Context, Error, presentation, repository};
 use poise::CreateReply;
 
-use super::common::{defer_ephemeral, ids, refresh_status_activity};
+use super::common::{defer_ephemeral, ids};
 
 /// 自分の活動記録・変更履歴・ユーザー設定を完全に削除する。
 #[poise::command(slash_command, guild_only)]
@@ -25,7 +25,6 @@ pub async fn erase(
 
     let (guild_id, user_id) = ids(ctx)?;
     let result = repository::purge_user_data(&ctx.data().database, guild_id, user_id).await?;
-    refresh_status_activity(ctx, "user data erased").await;
     ctx.send(
         CreateReply::default()
             .embed(presentation::response_embed(
