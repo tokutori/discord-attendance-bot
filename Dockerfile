@@ -28,6 +28,22 @@ ENV ATTENDANCE_PDF_FONT_PATH=/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.
 USER attendance
 ENTRYPOINT ["attendance-view"]
 
+FROM core-builder AS wal-probe-builder
+RUN cargo build --locked --release -p discord-attendance-bot --example wal-runtime-probe
+
+FROM runtime AS wal-probe
+COPY --from=wal-probe-builder /build/target/release/examples/wal-runtime-probe /usr/local/bin/wal-runtime-probe
+USER attendance
+ENTRYPOINT ["wal-runtime-probe"]
+
+FROM view-builder AS pdf-probe-builder
+RUN cargo build --locked --release -p attendance-view --example pdf-runtime-probe
+
+# Same font installation, libraries and user as the production view image.
+FROM view AS pdf-probe
+COPY --from=pdf-probe-builder /build/target/release/examples/pdf-runtime-probe /usr/local/bin/pdf-runtime-probe
+ENTRYPOINT ["pdf-runtime-probe"]
+
 # Default target remains the existing recording/maintenance image.
 FROM runtime AS core
 COPY --from=core-builder /build/target/release/discord-attendance-bot /usr/local/bin/discord-attendance-bot

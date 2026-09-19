@@ -72,6 +72,11 @@ Docker の view は DB volume を `:ro` でマウントし、バックアップ 
 
 WAL 方式の readonly reader は既存の `-wal`・`-shm` を読める必要がある。
 core を先に起動して DB・migration・WAL の初期化を完了させる。
+記録側は `WalAnchor` で pool 外の専用接続を保持する。最初の autocommit read で WAL を開き、
+以後 command には貸し出さず、記録プロセス終了まで保持する。pool の idle timeout / max lifetime によって
+全接続が回収されても、最後の SQLite 接続が閉じる状態を作らない。pool の最大5接続とは別に1接続を使う。
+anchor は read transaction を保持しないため、checkpoint/TRUNCATE を妨げない。
+プロセスの終了・DB ファイル交換・ストレージ障害からの継続を保証するものではなく、復元時は両プロセスを停止する。
 view が先に起動して失敗しても core へは影響せず、Compose の restart policy で再試行する。
 `immutable` は live DB の更新検知を無効にするため使わない。
 DB はローカルディスクに置く。バックアップは従来どおり記録側の `attendance-maintenance` と `VACUUM INTO` を使う。
@@ -124,6 +129,39 @@ live commit の可視性、view 再接続、通知が既読にならないこと
 別子プロセスの panic/kill 後も既存の記録 service で終了・再開ができることを確認する。
 既存の所有者制約・確認処理・取り消し・自動終了・帳票テストも各 crate で維持する。
 これは Discord Gateway の end-to-end テストではない。
+
+追加の `tests/wal_lifetime.rs` は idle timeout と max lifetime をそれぞれ短縮し、
+物理 pool 接続数が実際に0になるまで待つ。記録操作を挟まず reader を起動し、3回の接続回収・再生成と
+WAL truncate 成功を検証する。これは通常ファイルシステムでの SQLx テストであり、OS 権限の検証とは分ける。
+
+CI の `scripts/check-container-runtime.py` はネットワークなし・token なしの専用 probe を実行する。
+SQLx 0.9 / SQLite 3.51.3 を使用し、anchor なしでは idle 回収後の readonly 起動が失敗することを対照実験とする。
+anchor ありでは実際の readonly volume mount で reader が起動できること、DB/WAL/SHM の書込用 open と
+ファイル新規作成が OS に拒否されることを検査する。reader の停止・kill・再作成中も writer の PID を変えずに
+記録を追加し、再開した reader が全3件を取得することを確認する。probe は記録 service を使うが Discord command の代用ではない。
+PDF probe は production view と同じ runtime image のフォント・ユーザー・ライブラリを使い、
+Compose 相当の512 MiB・1 CPU・128 PID制限のもとで2種類の PDF を生成する。フォント欠如時の skip はない。
+PDF の外形検査であり、日本語の字形・レイアウトや Discord 添付の目視検証ではない。
+
+## 本番 DB に接続する query の変更契約
+
+`attendance-query` とその SQL・接続管理は **安定側** として扱う。表示だけの差し替えでは変更しない。
+自由に交換する対象は、取得済み DTO に対する Embed、集計表、CSV/PDF レイアウトなどの処理とする。
+SQL の追加・変更は記録系と同じレビュー対象とし、実データ規模で取得件数・実行時間・WAL 増加を検証する。
+表示側から任意 SQL や transaction handle を公開しない現在の API を維持し、PDF 生成中は接続を保持しない。
+運用者は WAL とディスク空き容量を監視し、異常な増加時にはまず view を停止する。
+
+この契約は実装・運用上の制約であり、現在の API にクエリ時間・取得量の強制上限があるという意味ではない。
+readonly reader も長い read transaction により WAL 回収を妨げ、ディスク満杯を通じて記録側へ影響し得る。
+実験的 SQL を自由に実行する用途には、本番 DB を直接マウントせず、記録側で作った整合 snapshot を渡すか、
+取得量・処理時間を制限する安定 query service を別途設計する。今回の変更にはその強い分離までは含めない。
+
+## 依存監査への対応
+
+比較元にも存在した `chacha20 0.10.1` の yank 警告を、互換 patch `0.10.2` への限定更新で解消する。
+依存経路は `printpdf → lopdf → rand → chacha20`。上流の [変更履歴](https://github.com/RustCrypto/stream-ciphers/blob/master/chacha20/CHANGELOG.md)
+と [修正 #580](https://github.com/RustCrypto/stream-ciphers/pull/580) で SSE2 backend の SSE4.1 命令使用の修正を確認した。
+`cargo audit --deny warnings` は維持し、警告の無視設定は追加しない。
 
 レビュー時の実機確認: 別 Application の登録・権限・添付ファイル・topic/Activity、
 view 停止中の Discord 記録 command、復旧後の表示を確認する。

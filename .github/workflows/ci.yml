@@ -68,3 +68,9 @@ jobs:
         run: docker build --tag discord-attendance-bot:ci .
       - name: Build view image independently
         run: docker build --target view --tag attendance-view:ci .
+      - name: Build offline WAL runtime probe
+        run: docker build --target wal-probe --tag wal-probe:ci .
+      - name: Build PDF probe in view runtime
+        run: docker build --target pdf-probe --tag pdf-probe:ci .
+      - name: Test readonly mounts, idle recovery, view replacement and PDF runtime
+        run: python scripts/check-container-runtime.py

@@ -11,6 +11,7 @@ use sqlx::SqlitePool;
 
 pub use attendance_shared::{config, database, text, time};
 pub mod auto_end;
+pub mod wal_anchor;
 
 pub struct Data {
     pub database: SqlitePool,

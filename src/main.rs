@@ -39,6 +39,12 @@ async fn main() -> anyhow::Result<()> {
         .synchronous(synchronous)
         .busy_timeout(Duration::from_secs(5))
         .foreign_keys(true);
+    // A live process is not enough: the pool may reap every physical connection.
+    // Keep a separate autocommit connection open until the client stops so that
+    // readonly view mounts can restart even after a long period without commands.
+    let wal_anchor = discord_attendance_bot::wal_anchor::WalAnchor::open(&options)
+        .await
+        .context("failed to retain the recording WAL connection")?;
     let database = SqlitePoolOptions::new()
         .max_connections(5)
         .connect_with(options)
@@ -110,5 +116,6 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("failed to create Discord client")?;
     client.start().await.context("Discord client stopped")?;
+    wal_anchor.close().await?;
     Ok(())
 }
