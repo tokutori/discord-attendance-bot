@@ -136,6 +136,8 @@ WAL truncate 成功を検証する。これは通常ファイルシステムで�
 
 CI の `scripts/check-container-runtime.py` はネットワークなし・token なしの専用 probe を実行する。
 SQLx 0.9 / SQLite 3.51.3 を使用し、anchor なしでは idle 回収後の readonly 起動が失敗することを対照実験とする。
+この組み合わせの Docker 実験では、DB 本体が存在しても最初の読取で `SQLITE_CANTOPEN (14)` を返した。
+レビュー側の SQLite 3.46.1 実験の `SQLITE_READONLY_DIRECTORY (1544)` と、起動失敗という性質は同じだがエラーコードは異なる。
 anchor ありでは実際の readonly volume mount で reader が起動できること、DB/WAL/SHM の書込用 open と
 ファイル新規作成が OS に拒否されることを検査する。reader の停止・kill・再作成中も writer の PID を変えずに
 記録を追加し、再開した reader が全3件を取得することを確認する。probe は記録 service を使うが Discord command の代用ではない。

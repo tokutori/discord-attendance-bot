@@ -3,6 +3,7 @@
 Requires wal-probe:ci and pdf-probe:ci targets. Never reads .env or starts a bot.
 """
 import subprocess
+import re
 import time
 import uuid
 
@@ -63,7 +64,12 @@ try:
         stage(writer, 0)
         _, result = reader(volume, 1)
         if not anchored:
-            assert result.returncode != 0 and "readonly" in result.stdout.lower(), result.stdout
+            # SQLite 3.51.3/SQLx on a readonly Docker mount reports CANTOPEN (14)
+            # at the first read; other SQLite builds report READONLY_DIRECTORY.
+            # The writer already proved sidecars disappeared after pool size=0.
+            codes = {int(code) for code in re.findall(r"\(code: (\d+)\)", result.stdout)}
+            assert result.returncode != 0 and codes & {8, 14, 1544}, result.stdout
+            print(result.stdout.strip(), flush=True)
             print("Negative control: pool reaped to zero without anchor; readonly startup rejected.", flush=True)
             advance(writer, 0)
         else:

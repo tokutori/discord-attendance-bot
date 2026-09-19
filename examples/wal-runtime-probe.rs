@@ -86,6 +86,10 @@ async fn writer(dir: &Path, anchored: bool) -> anyhow::Result<()> {
 }
 
 async fn reader(dir: &Path, hold: bool, expected: usize) -> anyhow::Result<()> {
+    ensure!(
+        dir.join("dummy.db").is_file(),
+        "probe database is missing from reader mount"
+    );
     let reader = attendance_query::ReadDatabase::open_file(&dir.join("dummy.db")).await?;
     ensure!(
         attendance_query::active_sessions(&reader, 1).await?.len() == expected,
