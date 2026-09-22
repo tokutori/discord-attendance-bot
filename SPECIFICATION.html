@@ -234,7 +234,7 @@
           <tr>
             <td><code>/attendanceview export</code></td>
             <td><code>month</code>、<code>mode</code>、<code>confirm_public</code></td>
-            <td>指定月のDiscord表示名あり版・本名のみ版の CSV と PDF（計4ファイル）を preview または publish で出力する。publishは<code>confirm_public:true</code>を必須とする。</td>
+            <td>指定月のDiscord表示名あり版・本名のみ版の CSV と PDFを preview または publish で1ファイルずつ出力する。format:csvではCSV2個のみを出力する。publishは<code>confirm_public:true</code>を必須とする。</td>
           </tr>
           <tr>
             <td><code>/attendanceexport userconfig</code></td>
@@ -558,7 +558,7 @@ Bem130
 
       <h3>5.12 <code>/attendanceexport help</code> / <code>export</code> / <code>userconfig</code> / <code>clearuserconfig</code></h3>
       <p><code>/attendanceexport help</code> は月次ファイル出力の使い方を Embed で表示する。</p>
-      <p><code>/attendanceview export</code> は <code>month</code> を必須とし、<code>YYYY-MM</code> 形式の指定月についてDiscord表示名あり版と本名のみ版の CSV と PDF、合計4ファイルを同時に生成する。<code>mode</code> は <code>preview</code> または <code>publish</code> で、既定値は <code>preview</code> とする。全メンバーの本名を含み得るため、実行者には「サーバー管理」権限を要求する。Botにはメッセージ送信・Embed・ファイル添付権限を要求する。<code>preview</code> は実行者だけに表示する。<code>publish</code> は<code>confirm_public:true</code>を必須とし、生成成功時のみ別の公開メッセージとして送信し、実行Guild・user・対象月を監査ログへ記録する。処理開始、エラー、公開成功の確認はどちらのmodeでもephemeralとする。</p>
+      <p><code>/attendanceview export</code> は <code>month</code> を必須とし、<code>YYYY-MM</code> 形式の指定月についてDiscord表示名あり版と本名のみ版の CSV と PDF、合計4ファイルを順次生成・送信する。<code>format:csv</code>ではCSV2個のみを生成し、PDF生成処理を呼ばない。<code>format</code>の既定値は<code>all</code>とする。<code>mode</code> は <code>preview</code> または <code>publish</code> で、既定値は <code>preview</code> とする。全メンバーの本名を含み得るため、実行者には「サーバー管理」権限を要求する。Botにはメッセージ送信・Embed・ファイル添付権限を要求する。<code>preview</code> は実行者だけに表示する。<code>publish</code> は<code>confirm_public:true</code>を必須とし、ファイルごとに別の公開メッセージとして送信し、実行Guild・user・対象月を監査ログへ記録する。処理開始、エラー、公開成功の確認はどちらのmodeでもephemeralとする。</p>
       <p><code>/attendanceexport userconfig</code> は本人の <code>generation</code>（代・整数）、<code>real_name</code>（本名）、<code>role</code>（代表、新入生、班名などの自由記述）、<code>name_reading</code>（活動中名簿の五十音順に使う読み）を設定する。読みはひらがな・カタカナを受け付け、ひらがなへ正規化して保存する。引数なしでは現在値を ephemeral Embed で表示し、一部の引数だけを指定した場合は指定していない設定を保持する。<code>clearuserconfig</code>は全プロフィール項目を解除する。</p>
       <h4>表の構造</h4>
       <p>表の縦方向は対象月に記録があるユーザー、横方向は対象月の日数にユーザー情報列と合計列を加えたものとする。4ファイルは <code>/attendanceview list</code> と共通の比較処理により、役割、代（昇順）、名前の読み（五十音順）で並べる。Discord表示名ありCSVでは代・本名・役割・Discord表示名を個別の列とし、PDFではユーザー情報欄にまとめる。本名のみ版はDiscord表示名を含めず、本名未設定時は「未設定」と表示する。CSVのユーザー入力列は表計算ソフトの数式として評価される危険な先頭文字を無害化し、その後でCSV構文をescapeする。活動時間があるセルは <code>時間:分</code> 形式で表示する。PDFの活動時間0セルは空欄、CSVの活動時間0セルは <code>0:00</code> とする。PDFの文字はセル内で上下中央揃えとし、長い代・本名・役割・Discord表示名は省略せず折り返しと文字サイズ調整を行う。活動中の記録は出力時点までを暫定値として含める。</p>
@@ -670,8 +670,8 @@ effective_end   = min(ended_at, month_end)
 duration        = max(effective_end - effective_start, 0)</code></pre>
       <p>1回あたり平均は <code>total / session_count</code>、1日あたり平均は <code>total / elapsed_calendar_days</code>、1週間あたり平均は <code>total * 7 / elapsed_calendar_days</code> とする。秒未満は整数除算で切り捨てる。<code>elapsed_calendar_days</code> は当月では今日を含む経過暦日、過去月では全日数、未来月では0とする。</p>
       <h3>9.1 月次ファイル出力</h3>
-      <p><code>/attendanceview export</code> は同じ月内重複計算をユーザー別・日別に展開し、<code>attendance_user_profiles</code> の代・本名・役割・名前の読みを反映したDiscord表示名あり版・本名のみ版のCSVとPDF（計4ファイル）にする。全ファイルは活動中名簿と共通の比較処理で並べる。ファイル出力では活動中の記録も出力時点までの暫定値として含める。出力表はユーザー行、日付列、合計列で構成する。生成後はinteraction固有の添付サイズ上限を各ファイルについて検査し、超過時は送信しない。</p>
-      <p>PDF 生成には <a href="https://docs.rs/printpdf/latest/printpdf/">printpdf</a> を採用する。表の配置・改ページ・文字レイアウトは Bot 側で明示的に制御し、保存時に <code>PdfSaveOptions.subset_fonts = true</code> を指定する。これにより、PDF に現れる文字のグリフだけをフォントから埋め込み、CJK フォント全体の埋め込みによる添付サイズ増大を避ける。日本語フォントは環境依存のため、<code>ATTENDANCE_PDF_FONT_PATH</code> でTTF・OTF・TTCを指定できる。</p>
+      <p><code>/attendanceview export</code> は同じ月内重複計算をユーザー別・日別に展開し、<code>attendance_user_profiles</code> の代・本名・役割・名前の読みを反映したDiscord表示名あり版・本名のみ版のCSVとPDF（計4ファイル）にする。全ファイルは活動中名簿と共通の比較処理で並べる。ファイル出力では活動中の記録も出力時点までの暫定値として含める。出力表はユーザー行、日付列、合計列で構成する。CSVを先に送信してからPDFを生成する。各ファイルについてinteraction固有の添付上限と24 MiBの容量上限を検査する。1メッセージ1添付とし、通常メッセージのリクエスト全体の25 MiB上限に対して、multipart情報と短い固定形式の本文用に1 MiBの余裕を確保する。この保守的な上限はpreviewにも適用する。上限超過・生成失敗・送信失敗はそのファイルのみの結果として扱い、残りのファイルの処理を続ける。結果一覧は本人だけに表示する。送信失敗時は到達の有無を断定できないため、再実行前に送信先を確認する。</p>
+      <p>PDF 生成には <a href="https://docs.rs/printpdf/latest/printpdf/">printpdf</a> を採用する。表の配置・改ページ・文字レイアウトは Bot 側で明示的に制御し、保存時に <code>PdfSaveOptions.subset_fonts = true</code> を指定する。サブセット化を指定しているが、現行のruntime probeでは1人・1件でも各PDFが約18.6 MiBとなる。サイズ削減の保証はなく、フォント軽量化は別途検討する。日本語フォントは環境依存のため、<code>ATTENDANCE_PDF_FONT_PATH</code> でTTF・OTF・TTCを指定できる。</p>
       <p><a href="https://docs.rs/genpdf/latest/genpdf/">genpdf</a> は <a href="https://docs.rs/genpdf/latest/genpdf/elements/">TableLayout</a> など高レベル API が便利だが、今回の使用文字だけのサブセット埋め込みを明示的に保証しにくいため採用しない。<a href="https://docs.rs/lopdf/latest/lopdf/">lopdf</a> / <a href="https://docs.rs/lopdf-table/latest/lopdf_table/">lopdf-table</a> は PDF 構造や表の細かな後処理が必要になった場合の候補とする。</p>
     </section>
 
@@ -682,7 +682,7 @@ duration        = max(effective_end - effective_start, 0)</code></pre>
         <li>Slash Command の利用者向け応答は、成功結果・想定内の入力エラー・権限エラーを含め、原則として本人だけが見られる ephemeral Embed を使用する。</li>
         <li><code>history</code>、<code>month</code>、<code>help</code> は専用レイアウトの Embed を使用する。</li>
         <li><code>/attendanceexport userconfig</code> は現在値または更新後の代・本名・役割・名前の読みを ephemeral Embed で表示する。</li>
-        <li><code>/attendanceview export</code> は <code>preview</code> では4ファイルを ephemeral に添付する。<code>publish</code> でも処理中・エラー・成功確認はephemeralとし、生成成功後だけ別の公開メッセージへ4ファイルを添付する。</li>
+        <li><code>/attendanceview export</code> は <code>preview</code> では全添付を1ファイルずつ ephemeral に送信する。<code>publish</code> でも処理中・エラー・結果一覧はephemeralとし、各添付は別々の公開メッセージへ送信する。PDFの失敗によって送信済みCSVを取り消さない。部分的な送信後に再実行すると重複し得る。</li>
         <li>自動終了通知は記録側のユーザー応答への付加に成功した後で通知済みにする。表示側での閲覧は通知済みにしない。公開export本文やPDFには実行者個人の通知を含めない。</li>
         <li>コマンドエラーは入力形式、PDFフォント、添付サイズ、データベース、Discord通信などの種別に分類し、原因と対処を Embed で説明する。秘密情報や認証情報は表示しない。</li>
         <li><code>revert</code> は直前の成功した変更操作を1件取り消し、操作内容と対象記録を Embed で説明する。<code>revert</code> 自体は履歴に積まれないため、連続実行では過去の変更を順に取り消せる。</li>

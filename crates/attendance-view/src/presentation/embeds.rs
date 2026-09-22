@@ -52,10 +52,10 @@ pub fn auto_end_notice_text(notice: &AutoEndNotice) -> String {
 pub fn export_help_embed() -> serenity::CreateEmbed {
     serenity::CreateEmbed::new()
         .title("活動時間エクスポート ヘルプ")
-        .description("月単位の活動時間を、Discord表示名あり・本名のみのCSV/PDF（計4ファイル）で出力する。month は必須。通常は preview で本人だけに送信する。")
+        .description("月単位の活動時間を、Discord表示名あり・本名のみのCSV/PDFで出力する。format:csv はCSV2個のみ、既定の all はPDF2個も出力する。各ファイルを別メッセージで送り、PDF失敗時もCSVを取得できる。month は必須。通常は preview で本人だけに送信する。")
         .field(
             "使い方",
-            "`/attendanceview export month:YYYY-MM [mode:preview|publish] [confirm_public]`\n月次帳票を出力する。publishでは confirm_public:true が必須。\n\n`/attendanceexport userconfig [generation] [real_name] [role] [name_reading]`\n代・本名・役割と名簿用の読みを設定する。全項目を省略すると現在値を表示する。\n\n`/attendanceexport clearuserconfig`\n代・本名・役割・名前の読みをすべて解除する。\n\n`/attendanceview help`\nこのヘルプを表示する。",
+            "`/attendanceview export month:YYYY-MM [mode:preview|publish] [confirm_public] [format:all|csv]`\n月次帳票を出力する。publishでは confirm_public:true が必須。\n\n`/attendanceexport userconfig [generation] [real_name] [role] [name_reading]`\n代・本名・役割と名簿用の読みを設定する。全項目を省略すると現在値を表示する。\n\n`/attendanceexport clearuserconfig`\n代・本名・役割・名前の読みをすべて解除する。\n\n`/attendanceview help`\nこのヘルプを表示する。",
             false,
         )
         .field(

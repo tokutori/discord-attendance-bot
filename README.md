@@ -34,7 +34,7 @@
 - `/attendance confirm id`
 - `/attendance erase confirmation:DELETE`
 - `/attendance help`
-- `/attendanceview export month [mode] [confirm_public]`
+- `/attendanceview export month [mode] [confirm_public] [format]`
 - `/attendanceexport userconfig [generation] [real_name] [role] [name_reading]`
 - `/attendanceexport clearuserconfig`
 - `/attendanceexport help`
@@ -143,6 +143,8 @@ DBにはDiscord user ID、履歴上の表示名、活動時刻、任意の備考
 - 通常の`/attendance delete`は取り消し可能にするため論理削除です。
 
 完全消去後も、保持期間内のバックアップや、過去にDiscordへ公開したCSV・PDFには情報が残り得ます。運用者はバックアップ保持期限とDiscord上の削除手順を定めてください。
+
+月次exportは `format:csv` でCSVのみ、既定の `format:all` でCSV・PDFを出力します。各ファイルを別メッセージで送り、CSVの送信後にPDFを生成します。PDFの失敗・サイズ超過は他のファイルの送信を妨げません。結果はファイルごとに本人へ通知し、再実行時には送信済みファイルが重複する場合があります。個別添付上限に加え、リクエスト全体の25 MiB制限への余裕を確保するため、ファイル当たり24 MiBを上限とします。
 
 月次exportは既定で`preview`となり、実行者だけへ送信します。`publish`では全員分の本名と活動時間を公開するため、`confirm_public:true`の明示指定が必要で、実行を監査ログへ記録します。
 
