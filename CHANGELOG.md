@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- 記録用 Bot に `/attendance panel` と共用 join・exit ボタンを追加。操作結果の永続化による重複排除と本人限定の応答を実装。
+- 試作中の schema を初期 migration 1本へ統合。旧テストDBとの後方互換は保証しない。
+
 - 設定見本をルートの `.env.example` に統一。Composeは単一の `.env` からサービスごとに必要な変数だけを渡す。
 
 - 月次exportに `format:csv` を追加。CSVを先に送信し、PDF失敗時も取得可能にした。添付を1ファイルずつ送り、個別上限とリクエスト容量を検査する。

@@ -18,6 +18,10 @@ pub async fn purge_user_data(
     user_id: i64,
 ) -> Result<PurgeUserResult, sqlx::Error> {
     let mut tx = begin_immediate(pool).await?;
+    // Preserve only the anonymous interaction ID and expiry timestamp so a
+    // delayed duplicate cannot recreate data after the user's erasure request.
+    sqlx::query("UPDATE attendance_panel_receipts SET guild_id=NULL,user_id=NULL,channel_id=NULL,message_id=NULL,application_id=NULL,action=NULL,outcome_json=NULL WHERE guild_id=? AND user_id=?")
+        .bind(guild_id).bind(user_id).execute(&mut *tx).await?;
     let sessions = sqlx::query(
         "DELETE FROM attendance_sessions
          WHERE guild_id = ? AND user_id = ?",

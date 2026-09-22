@@ -70,12 +70,20 @@ async fn validate_schema(pool: &SqlitePool) -> anyhow::Result<()> {
             .context("attendance DB has not been migrated by core")?;
     ensure!(
         versions == [(1, true)],
-        "unsupported attendance schema; update attendance-view to match core (expected migration 1)"
+        "unsupported attendance schema; core and view must use the current initial schema"
     );
     // Check the actual read contract as well as the migration ledger.
     sqlx::query("SELECT id, guild_id, user_id, display_name, started_at, ended_at, open_since, note, created_at, updated_at, deleted_at FROM attendance_sessions LIMIT 0").fetch_all(pool).await?;
     sqlx::query("SELECT guild_id, user_id, generation, real_name, role, name_reading, updated_at FROM attendance_user_profiles LIMIT 0").fetch_all(pool).await?;
     sqlx::query("SELECT id, session_id, guild_id, user_id, automatic_ended_at, applied_at, corrected_at, notified_at FROM attendance_auto_end_events LIMIT 0").fetch_all(pool).await?;
+    // Prototypes consolidate the initial migration; an older schema with the
+    // same ledger version is not accepted. No panel records are fetched here.
+    sqlx::query(
+        "SELECT guild_id, channel_id, message_id, application_id FROM attendance_panels LIMIT 0",
+    )
+    .fetch_all(pool)
+    .await?;
+    sqlx::query("SELECT interaction_id, guild_id, user_id, channel_id, message_id, application_id, action, received_at, outcome_json FROM attendance_panel_receipts LIMIT 0").fetch_all(pool).await?;
     Ok(())
 }
 

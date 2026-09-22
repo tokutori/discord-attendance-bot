@@ -1,12 +1,12 @@
 # Discord 活動時間記録 Bot
 
-日本語圏のクラブ・チーム向けに、メンバーの活動時間をDiscordのSlash Commandから記録するセルフホスト型Botです。1つの実行プロセスが1つのDiscord Guildを担当し、データは運用者が管理するSQLiteファイルへ保存します。
+日本語圏のクラブ・チーム向けに、メンバーの活動時間をDiscordのSlash Command・常設ボタンから記録するセルフホスト型Botです。1つの実行プロセスが1つのDiscord Guildを担当し、データは運用者が管理するSQLiteファイルへ保存します。
 
 中央サービス型のマルチGuild SaaS、多言語対応、給与・法定勤怠管理を目的とした製品ではありません。法令上の勤怠・賃金計算に使用する場合は、必要な要件を別途確認してください。
 
 記録用 `discord-attendance-bot` と表示用 `attendance-view` を別プロセス・別 Discord Application として実行します。
 表示側は SQLite を readonly で参照し、CSV/PDF・ステータス表示の停止や再起動が記録側を停止させません。
-既存運用からの変更点・設定・更新手順は [分離設計と移行手順](docs/process-separation.md) を参照してください。
+設定・更新手順は [分離設計と起動手順](docs/process-separation.md) を参照してください。
 
 ## 主な機能
 
@@ -34,6 +34,7 @@
 - `/attendance confirm id`
 - `/attendance erase confirmation:DELETE`
 - `/attendance help`
+- `/attendance panel`（管理者が実行チャンネルへ共用 join・exit ボタンを設置）
 - `/attendanceview export month [mode] [confirm_public] [format]`
 - `/attendanceexport userconfig [generation] [real_name] [role] [name_reading]`
 - `/attendanceexport clearuserconfig`
@@ -41,6 +42,8 @@
 - `/attendanceview help`
 
 `at`は`HH:MM`、`target`は`YYYY-MM`、編集日時は`YYYY-MM-DD HH:MM`形式です。入力と表示には`ATTENDANCE_TIMEZONE`を使用し、DBにはUTC Unix timestampを保存します。
+
+パネルの操作・再設置・重複排除・処理済み情報の保持方針は [常設パネル](docs/recording-panel.md) を参照してください。
 
 ## 必要環境
 
@@ -74,7 +77,7 @@ Manage Channelsは、可能ならサーバー全体ではなく専用チャン�
 Copy-Item .env.example .env
 ```
 
-Docker Composeでは、記録用・表示用の値を同じ `.env` に設定します。共通設定は両者へ、トークンと専用設定は必要なサービスだけへ渡します。`.env` ファイル自体をコンテナへ渡すことはありません。表示用に別の設定見本や `.env.view` を用意する必要はありません。詳細は [移行手順](docs/process-separation.md) を参照してください。
+Docker Composeでは、記録用・表示用の値を同じ `.env` に設定します。共通設定は両者へ、トークンと専用設定は必要なサービスだけへ渡します。`.env` ファイル自体をコンテナへ渡すことはありません。表示用に別の設定見本や `.env.view` を用意する必要はありません。詳細は [起動手順](docs/process-separation.md) を参照してください。
 
 主要設定は次のとおりです。
 
@@ -194,10 +197,10 @@ cargo run --locked --release --bin attendance-maintenance -- verify attendance.d
 ## 更新とmigration
 
 - 更新前に検証済みバックアップを取得します。
-- 公開済みmigrationファイルは変更せず、schema変更は新しい連番migrationとして追加します。
+- 現在は既存環境のない試作段階であり、schemaは `0001_initial_schema.sql` に統合します。後方互換は保証せず、新規DBを検証対象とします。データを維持する運用の開始後は初期migrationを固定し、連番で追加します。
 - 記録側だけが `sqlx::migrate!` により起動時に未適用migrationを実行します。
 - ロールバックが必要な場合は、Botを停止して更新前バックアップから復元します。
-- `v0.0`の試験DBと現在のv1 schemaには移行互換性がありません。旧DBを本番データとして使用している場合は、自動削除せず個別に移行計画を作成してください。
+- 変更前の初期migrationを適用済みのテストDBは再利用対象外です。運用者が必要なデータを確認して新規DBを用意してください。Botが旧DBを自動削除・変換することはありません。
 
 ## データベース設計
 

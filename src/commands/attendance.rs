@@ -6,6 +6,7 @@ mod privacy;
 
 use crate::{Context, Error};
 
+pub use crate::panel::panel;
 pub use daily::{continue_activity, end, exit, join, start};
 pub use guarded::{confirm, delete, edit, revert};
 pub use help::help;
@@ -23,7 +24,8 @@ pub use privacy::erase;
         "edit",
         "delete",
         "erase",
-        "help"
+        "help",
+        "panel"
     ),
     subcommand_required
 )]
@@ -44,7 +46,7 @@ mod tests {
                 .as_deref()
                 .is_some_and(|value| value != "A slash command")
         );
-        assert_eq!(command.subcommands.len(), 9);
+        assert_eq!(command.subcommands.len(), 10);
         assert_eq!(
             command
                 .subcommands
@@ -52,7 +54,8 @@ mod tests {
                 .map(|c| c.name.as_str())
                 .collect::<Vec<_>>(),
             [
-                "start", "end", "continue", "revert", "confirm", "edit", "delete", "erase", "help"
+                "start", "end", "continue", "revert", "confirm", "edit", "delete", "erase", "help",
+                "panel"
             ]
         );
         for subcommand in command.subcommands {

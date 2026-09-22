@@ -307,6 +307,8 @@
     <section>
       <h2>5. 各コマンドの仕様</h2>
 
+      <h3>常設の活動記録パネル</h3>
+      <p><code>/attendance panel</code> はサーバー管理権限を要求し、実行チャンネルに記録用 Bot 所有の共用 join・exit ボタンを設置する。本人の現在時刻・備考なしの記録を既存コマンドと共通処理で確定し、本人だけに結果を返す。記録と操作結果を同じ transaction で保存して再適用を防ぐ。再起動後も登録済みパネルを使用する。詳細な復旧・保持期間・受入条件は <a href="docs/recording-panel.md">常設パネル仕様</a> を参照する。</p>
       <h3>5.1 <code>/attendance help</code></h3>
       <p>利用可能なコマンドと引数を Embed で表示する。応答は本人にだけ表示される。</p>
 
@@ -579,7 +581,7 @@ Bem130
 
     <section>
       <h2>7. SQLite schema</h2>
-      <p>v1.0では本番運用前の設計見直しとしてmigration履歴をリセットし、<code>migrations/0001_initial_schema.sql</code> から新規DBを作成する。v0.0のテストDBとはmigration互換性を持たせないため、Bot停止後に旧テストDBと対応する <code>-wal</code>・<code>-shm</code> を削除して再作成する。本番運用開始後のmigrationにはこの方法を使用しない。</p>
+      <p>既存環境のない試作段階では migration を <code>migrations/0001_initial_schema.sql</code> に統合し、新規DBを検証する。旧テストDBの後方互換は保証しない。必要なデータの確認と新規DBの準備は運用者が行い、アプリケーションは旧DBを自動削除・変換しない。データを維持する運用の開始後は初期 migration を固定し、変更を連番で追加する。</p>
       <pre><code>CREATE TABLE attendance_sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
 
@@ -637,7 +639,7 @@ WHERE deleted_at IS NULL;</code></pre>
         <li>自動終了後のユーザー <code>end</code> は自動終了を取り消し、ユーザー入力を正として保存する。</li>
         <li>編集・削除時は、SQL 条件に <code>guild_id</code> と <code>user_id</code> を含める。</li>
         <li>削除済み記録は通常の検索・集計から除外する。</li>
-        <li><code>/attendance erase confirmation:DELETE</code>は本人所有の全データを外部キーcascadeを含めて物理削除する。バックアップと公開済み帳票は別途保持方針に従う。</li>
+        <li><code>/attendance erase confirmation:DELETE</code>は本人所有の記録・履歴・設定を外部キーcascadeを含めて物理削除し、パネル操作結果からも本人情報を消去する。再適用防止の interaction ID と受信時刻だけは所有者との紐付けを消して保持し、30日超過後の次回有効操作時に削除する。バックアップと公開済み帳票は別途保持方針に従う。</li>
         <li>表示名は参考情報として保存する。本人識別には Discord user ID を使用する。</li>
         <li>成功した <code>start</code>、<code>end</code>、<code>continue</code>、<code>edit</code>、<code>delete</code> は <code>revert</code> 用の操作履歴を作成する。no-op や失敗した操作は履歴に追加しない。</li>
         <li>同一ユーザーの削除されていない活動区間は重複させない。競合し得る確認・変更処理は即時write transactionで直列化し、WALのbusy/lockedにはbusy timeoutと限定的な再試行を使用する。</li>

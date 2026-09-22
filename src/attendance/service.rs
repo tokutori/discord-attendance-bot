@@ -1,14 +1,15 @@
-use sqlx::SqlitePool;
+use serde::{Deserialize, Serialize};
+use sqlx::{Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
 
 use crate::{attendance::AttendanceSession, repository};
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum StartOutcome {
     Started(AttendanceSession),
     AlreadyActive(AttendanceSession),
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum EndOutcome {
     Ended(AttendanceSession),
     AutoEndedCorrected {
@@ -52,38 +53,67 @@ pub async fn start(
     note: Option<&str>,
     now: i64,
 ) -> Result<StartOutcome, ServiceError> {
+    let mut tx = repository::begin_immediate(pool).await?;
+    let outcome = start_in_tx(
+        &mut tx,
+        guild_id,
+        user_id,
+        display_name,
+        started_at,
+        note,
+        now,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(outcome)
+}
+
+pub(crate) async fn start_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    guild_id: i64,
+    user_id: i64,
+    display_name: &str,
+    started_at: i64,
+    note: Option<&str>,
+    now: i64,
+) -> Result<StartOutcome, ServiceError> {
     if started_at > now {
         return Err(ServiceError::FutureTime);
     }
-    if let Some(existing) = repository::open_session(pool, guild_id, user_id).await? {
+    let existing = sqlx::query_as::<_, AttendanceSession>(
+        "SELECT * FROM attendance_sessions WHERE guild_id=? AND user_id=? AND ended_at IS NULL AND deleted_at IS NULL LIMIT 1"
+    ).bind(guild_id).bind(user_id).fetch_optional(&mut **tx).await?;
+    if let Some(existing) = existing {
         return Ok(StartOutcome::AlreadyActive(existing));
     }
-    match repository::insert_session(pool, guild_id, user_id, display_name, started_at, note, now)
-        .await
-    {
-        Ok(id) => Ok(StartOutcome::Started(
-            repository::get_owned(pool, id, guild_id, user_id)
-                .await?
-                .ok_or(ServiceError::Invariant(
-                    "inserted session could not be read back",
-                ))?,
-        )),
-        Err(repository::SessionMutationError::Database(e))
-            if e.as_database_error()
-                .is_some_and(|database_error| database_error.is_unique_violation()) =>
-        {
-            Ok(StartOutcome::AlreadyActive(
-                repository::open_session(pool, guild_id, user_id)
-                    .await?
-                    .ok_or(ServiceError::OpenSessionConflict)?,
-            ))
-        }
-        Err(repository::SessionMutationError::Overlapping) => Err(ServiceError::OverlappingSession),
-        Err(repository::SessionMutationError::Database(e)) => Err(e.into()),
-        Err(repository::SessionMutationError::EndBeforeStart) => Err(ServiceError::EndBeforeStart),
-        Err(repository::SessionMutationError::Invariant(message)) => {
-            Err(ServiceError::Invariant(message))
-        }
+    let id = repository::insert_session_in_tx(
+        tx,
+        guild_id,
+        user_id,
+        display_name,
+        started_at,
+        note,
+        now,
+    )
+    .await
+    .map_err(map_mutation_error)?;
+    let session = sqlx::query_as::<_, AttendanceSession>(
+        "SELECT * FROM attendance_sessions WHERE id=? AND guild_id=? AND user_id=?",
+    )
+    .bind(id)
+    .bind(guild_id)
+    .bind(user_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(StartOutcome::Started(session))
+}
+
+fn map_mutation_error(error: repository::SessionMutationError) -> ServiceError {
+    match error {
+        repository::SessionMutationError::Overlapping => ServiceError::OverlappingSession,
+        repository::SessionMutationError::EndBeforeStart => ServiceError::EndBeforeStart,
+        repository::SessionMutationError::Database(error) => error.into(),
+        repository::SessionMutationError::Invariant(message) => ServiceError::Invariant(message),
     }
 }
 
@@ -95,10 +125,25 @@ pub async fn end(
     note: Option<&str>,
     now: i64,
 ) -> Result<EndOutcome, ServiceError> {
+    let mut tx = repository::begin_immediate(pool).await?;
+    let outcome = end_in_tx(&mut tx, guild_id, user_id, ended_at, note, now).await?;
+    tx.commit().await?;
+    Ok(outcome)
+}
+
+pub(crate) async fn end_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    guild_id: i64,
+    user_id: i64,
+    ended_at: i64,
+    note: Option<&str>,
+    now: i64,
+) -> Result<EndOutcome, ServiceError> {
     if ended_at > now {
         return Err(ServiceError::FutureTime);
     }
-    match repository::end_or_correct_session(pool, guild_id, user_id, ended_at, note, now).await {
+    match repository::end_or_correct_session_in_tx(tx, guild_id, user_id, ended_at, note, now).await
+    {
         Ok(repository::EndSessionResult::Ended(session)) => Ok(EndOutcome::Ended(session)),
         Ok(repository::EndSessionResult::AutoEndedCorrected {
             session,

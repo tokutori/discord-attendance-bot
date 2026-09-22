@@ -78,6 +78,7 @@ pub fn help_embed(display_name: &str) -> serenity::CreateEmbed {
         .description(format!(
             "活動時間を記録・確認・修正するためのコマンド一覧。\n時刻の入力と表示は {timezone}。通常の応答は本人にだけ表示される。\n月次ファイル出力は `/attendanceexport help` を参照。"
         ))
+        .field("共用ボタン", "join・exit ボタンで本人の活動を現在時刻で記録できる。管理者は `/attendance panel` で実行チャンネルへ設置する。", false)
         .field(
             "▶ 日常の操作コマンド",
             "`/attendance start [at] [note]` / `/join [at] [note]`\n活動を開始する。`at` は `HH:MM`（省略時は現在時刻）。\n\n`/attendance end [at] [note]` / `/exit [at] [note]`\n活動を終了する。\n\n`/attendance continue`\n直近の終了済み記録を活動中へ戻す。",
@@ -95,7 +96,7 @@ pub fn help_embed(display_name: &str) -> serenity::CreateEmbed {
         )
         .field(
             "🔐 確認の流れ",
-            "`revert` / `edit` / `delete` を実行すると、変更内容と5文字の確認IDが表示される。\n\n確認IDの有効期限は5分。確認前はDBを変更しない。\n`/attendance confirm id:<ID>` で確定する。IDは本人の要求にのみ使用でき、使用済みIDは再利用できない。別の変更が入った場合は安全のため確定されない。\n\n`/attendance erase confirmation:DELETE` は、本人の全記録・履歴・ユーザー設定を即時かつ完全に削除する。取り消せない。",
+            "`revert` / `edit` / `delete` を実行すると、変更内容と5文字の確認IDが表示される。\n\n確認IDの有効期限は5分。確認前はDBを変更しない。\n`/attendance confirm id:<ID>` で確定する。IDは本人の要求にのみ使用でき、使用済みIDは再利用できない。別の変更が入った場合は安全のため確定されない。\n\n`/attendance erase confirmation:DELETE` は、本人の全記録・履歴・ユーザー設定を即時に削除する。取り消せない。ボタンの再適用防止用 interaction ID と受信時刻だけは所有者との紐付けを消して保持する。",
             false,
         )
         .footer(serenity::CreateEmbedFooter::new(

@@ -16,7 +16,7 @@ pub enum SessionStateError {
 /// The database invariant is that `ended_at` and `open_since` are mutually
 /// exclusive: completed rows have only `ended_at`, while active rows have only
 /// `open_since`. Use the checked accessors when a caller requires one state.
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, FromRow, serde::Serialize, serde::Deserialize)]
 pub struct AttendanceSession {
     pub id: i64,
     pub guild_id: i64,
