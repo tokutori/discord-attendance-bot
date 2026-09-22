@@ -18,6 +18,16 @@ python scripts/check-boundaries.py
 実行アプリの workspace として `publish = false` にしており、`cargo package` による単一 crate 配布は行いません。
 ビルド・運用契約は [分離設計](docs/process-separation.md) を参照してください。
 
+## ブランチ運用
+
+- `main`: 本番反映可能な安定版。`dev` からリリースPRを作成し、bemの受入確認・承認後に取り込む。
+- `dev`: 次期版の統合・受入確認用。CIが通る状態を維持する。
+- `feat/*`・`fix/*`: 原則 `dev` から分岐し、目的ごとのPRを `dev` へ送る。レビューとCI確認後に取り込む。
+- `dev` へのマージは、対象headの適切なCIとsubagentによる独立レビューを確認し、指摘を解消した後、エージェントが自律的に実行してよい。`main` への反映は引き続きbemの受入確認・明示承認を必要とする。
+- `dev` → `main` は共通履歴を維持するため通常のmerge commitを使用する。本番の緊急修正を `main` 起点で行った場合は `dev` にも取り込む。
+- `dev` の受入試験はテスト用Bot・Guild・DBで行う。確認項目は [受入手順](docs/acceptance.md) を参照する。
+- `dev` への統合と本番反映を区別する。ブランチ作成やPR承認は、自動的な本番デプロイの許可を意味しない。
+
 ## Pull Request
 
 - 変更理由、利用者への影響、検証結果を記載してください。
