@@ -64,6 +64,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v7
+      - name: Validate Compose configuration with isolated dummy settings
+        run: python scripts/check-compose-config.py
       - name: Build Docker image
         run: docker build --tag discord-attendance-bot:ci .
       - name: Build view image independently

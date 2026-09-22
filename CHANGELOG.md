@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 設定見本をルートの `.env.example` に統一。Composeは単一の `.env` からサービスごとに必要な変数だけを渡す。
+
 - 月次exportに `format:csv` を追加。CSVを先に送信し、PDF失敗時も取得可能にした。添付を1ファイルずつ送り、個別上限とリクエスト容量を検査する。
 - `main`・`dev`・`feat/*` / `fix/*` のブランチ運用と、テスト環境での受入手順を文書化。
 - 記録プロセスと readonly 表示プロセスを分離。表示には別 Discord Application が必要。

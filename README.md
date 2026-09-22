@@ -68,13 +68,13 @@ Manage Channelsは、可能ならサーバー全体ではなく専用チャン�
 
 ## 設定
 
-`.env.example`を`.env`へコピーし、ダミー値を置き換えます。`.env`はGitへ追加しないでください。
+設定見本はルートの `.env.example` に統一しています。Docker Composeでは、これを `.env` へコピーし、ダミー値を置き換えます。`.env`はGitへ追加しないでください。
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-表示側は `config/view/.env.example` を `.env.view` へコピーして別途設定します。status/PDF 設定は表示側にのみ適用します。詳細は [移行手順](docs/process-separation.md) を参照してください。
+Docker Composeでは、記録用・表示用の値を同じ `.env` に設定します。共通設定は両者へ、トークンと専用設定は必要なサービスだけへ渡します。`.env` ファイル自体をコンテナへ渡すことはありません。表示用に別の設定見本や `.env.view` を用意する必要はありません。詳細は [移行手順](docs/process-separation.md) を参照してください。
 
 主要設定は次のとおりです。
 
@@ -106,7 +106,7 @@ docker compose up -d
 docker compose logs -f bot
 ```
 
-上の手順は記録側のみを起動します。表示側の `.env.view` 設定後、`docker compose --profile view up -d --build --no-deps view` で表示側を追加します。
+上の手順は記録側のみを起動します。同じ `.env` の表示側専用項目を設定後、`docker compose --profile view up -d --build --no-deps view` で表示側を追加します。
 
 DBとバックアップはDocker named volumeへ保存されます。コンテナを削除しても、volumeを明示的に削除しない限りデータは残ります。`docker compose down -v`はDBとバックアップvolumeを削除するため、通常運用では実行しないでください。
 
@@ -117,7 +117,9 @@ cargo build --locked --release -p discord-attendance-bot --bins
 cargo run --locked --release -p discord-attendance-bot --bin discord-attendance-bot
 ```
 
-表示側は専用の `.env.view` を設定し、`cargo run --locked --release -p attendance-view --bin attendance-view` で起動します。
+ソースを直接実行する場合は、同じ `.env.example` の「共通」と「記録側専用」だけを記録側の `.env` に、「共通」と「表示側専用」だけを表示側の `.env.view` に設定します。表示側のファイルに `DISCORD_TOKEN` を含めないでください。このファイル分離は直接実行用であり、Composeでは不要です。
+
+表示側は `cargo run --locked --release -p attendance-view --bin attendance-view` で起動します。
 
 互換モードは次のように起動します。
 
