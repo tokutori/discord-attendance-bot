@@ -3,11 +3,19 @@ services:
     image: discord-attendance-bot:local
     build: .
     restart: unless-stopped
-    env_file:
-      - .env
+    # .env is an interpolation source only; never pass it wholesale to a service.
     environment:
+      DISCORD_TOKEN: ${DISCORD_TOKEN:-}
+      DISCORD_GUILD_ID: ${DISCORD_GUILD_ID:-}
       DATABASE_URL: sqlite:///data/attendance.db
+      ATTENDANCE_TIMEZONE: ${ATTENDANCE_TIMEZONE:-Asia/Tokyo}
+      ATTENDANCE_AUTO_END_TIME: ${ATTENDANCE_AUTO_END_TIME:-21:00}
       ATTENDANCE_SQLITE_SYNCHRONOUS: full
+      RUST_LOG: ${RUST_LOG:-discord_attendance_bot=info,attendance_view=info,poise=info,serenity=info}
+      DISCORD_TEST_GUILD_ID: ${DISCORD_TEST_GUILD_ID:-}
+      DISCORD_RELEASE_GUILD_ID: ${DISCORD_RELEASE_GUILD_ID:-}
+      DATABASE_URL_TEST: ${DATABASE_URL_TEST:-}
+      DATABASE_URL_RELEASE: ${DATABASE_URL_RELEASE:-}
     volumes:
       - attendance-data:/data
       - attendance-backups:/backups
@@ -19,11 +27,25 @@ services:
       target: view
     profiles: ["view"]
     restart: unless-stopped
-    env_file:
-      - .env.view
+    # Allowlist: core credentials and the host .env file never enter view.
     environment:
+      DISCORD_VIEW_TOKEN: ${DISCORD_VIEW_TOKEN:-}
+      DISCORD_CORE_APPLICATION_ID: ${DISCORD_CORE_APPLICATION_ID:-}
+      DISCORD_GUILD_ID: ${DISCORD_GUILD_ID:-}
       DATABASE_URL: sqlite:///data/attendance.db
+      ATTENDANCE_TIMEZONE: ${ATTENDANCE_TIMEZONE:-Asia/Tokyo}
+      ATTENDANCE_AUTO_END_TIME: ${ATTENDANCE_AUTO_END_TIME:-21:00}
+      ATTENDANCE_STATUS_MODE: ${ATTENDANCE_STATUS_MODE:-}
+      ATTENDANCE_STATUS_CHANNEL_ID: ${ATTENDANCE_STATUS_CHANNEL_ID:-}
+      ATTENDANCE_STATUS_REFRESH_SECONDS: ${ATTENDANCE_STATUS_REFRESH_SECONDS:-600}
       ATTENDANCE_PDF_FONT_PATH: /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+      RUST_LOG: ${RUST_LOG:-discord_attendance_bot=info,attendance_view=info,poise=info,serenity=info}
+      DISCORD_TEST_GUILD_ID: ${DISCORD_TEST_GUILD_ID:-}
+      DISCORD_RELEASE_GUILD_ID: ${DISCORD_RELEASE_GUILD_ID:-}
+      DATABASE_URL_TEST: ${DATABASE_URL_TEST:-}
+      DATABASE_URL_RELEASE: ${DATABASE_URL_RELEASE:-}
+      ATTENDANCE_STATUS_CHANNEL_ID_TEST: ${ATTENDANCE_STATUS_CHANNEL_ID_TEST:-}
+      ATTENDANCE_STATUS_CHANNEL_ID_RELEASE: ${ATTENDANCE_STATUS_CHANNEL_ID_RELEASE:-}
     volumes:
       - attendance-data:/data:ro
     read_only: true

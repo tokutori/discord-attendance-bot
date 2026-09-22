@@ -88,9 +88,10 @@ DB はローカルディスクに置く。バックアップは従来どおり�
 2. 表示用 Discord Application を新規作成し、同じ Guild へ追加する。
    表示側には View Channel / Send Messages / Embed Links / Attach Files を付与する。
    Topic を使う場合だけ対象チャンネルの Manage Channels も付与する。
-3. `config/view/.env.example` をルートの `.env.view` にコピーし、運用者が値を設定する。
-   記録側 `.env` を丸ごとコピーしない。表示用に記録 token は不要。
-   Guild・timezone・auto-end policy は記録側と合わせる。status/PDF 設定は表示側へ移す。
+3. ルートの `.env.example` を唯一の見本とし、Compose用の `.env` に記録用・表示用の項目を設定する。
+   既存の `.env` を上書きせず、不足する表示側専用項目を運用者が追加する。
+   Composeは共通のGuild・timezone・auto-end policyを両者へ渡し、トークンなどの専用項目をサービス別に限定する。
+   `env_file` でファイル全体を渡さず、`.env` 自体もコンテナへマウントしない。Compose用の `.env.view` は不要。
 4. 記録用イメージを更新し `docker compose up -d --no-deps bot` で初回の切替を行う。
    この初回導入では記録プロセスの再起動が必要。再登録により旧表示 subcommand は記録 Bot から消える。
 5. `docker compose --profile view build view`、続いて
@@ -111,7 +112,8 @@ docker compose --profile view start view
 ソース運用でも別 OS ユーザー・別環境で各 binary を起動する。
 記録側は従来の `.env`、表示側はカレントディレクトリの `.env.view` だけを読み込む。
 DB URL には同じ DB の絶対パスを設定する。
-view 用 `.env.view` には `DISCORD_VIEW_TOKEN` のみを入れ、記録 token を含めない。
+見本は共通の `.env.example` を使い、記録側のファイルには「共通」と「記録側専用」、表示側のファイルには「共通」と「表示側専用」の項目だけを設定する。
+view 用 `.env.view` に記録 token を含めない。直接実行ではComposeの環境変数制限が適用されないため、この運用上の分離を維持する。
 
 ```powershell
 cargo build --locked --release -p discord-attendance-bot --bins
@@ -123,6 +125,8 @@ view 停止中は古い topic が残り得る。再開後の定期取得で更�
 個人データ消去後も、既存 topic は次の更新まで残り、過去の帳票は従来どおり削除対象外。
 
 ## 検証範囲
+
+`python scripts/check-compose-config.py` は一時ディレクトリのダミー設定だけでComposeを展開する。ホストの `.env` やDockerの認証設定を読まず、プロセス環境も設定値を引き継がない。サービス別の変数一覧、共通設定の一致、viewのreadonly volume、maintenanceへのトークン非注入を検査する。Docker daemonやDiscord接続は不要。
 
 ローカルの自動テストでは、実ファイル WAL DB を使い、readonly の全接続で DML/DDL 拒否、
 live commit の可視性、view 再接続、通知が既読にならないこと、スキーマ拒否を検査する。
