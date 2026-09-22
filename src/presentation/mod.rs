@@ -1,5 +1,2 @@
-pub mod embeds;
-pub mod status_topic;
+mod embeds;
 pub use embeds::*;
-
-pub use status_topic::{activity_status, status_topic};

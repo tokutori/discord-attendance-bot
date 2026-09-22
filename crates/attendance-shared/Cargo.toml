@@ -1,0 +1,17 @@
+[package]
+name = "attendance-shared"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT"
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+serde.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+unicode-normalization.workspace = true
+libsqlite3-sys.workspace = true

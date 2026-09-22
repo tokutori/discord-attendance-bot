@@ -1,7 +1,7 @@
 use chrono::Utc;
 use poise::CreateReply;
 
-use crate::{Context, Error, channel_status, presentation, repository, time::format_datetime};
+use crate::{Context, Error, presentation, repository, time::format_datetime};
 
 pub(super) fn ids(ctx: Context<'_>) -> Result<(i64, i64), Error> {
     let guild = ctx
@@ -93,36 +93,4 @@ pub(super) async fn send_response(
 pub(super) async fn defer_ephemeral(ctx: Context<'_>) -> Result<(), Error> {
     ctx.defer_ephemeral().await?;
     Ok(())
-}
-
-pub(super) async fn refresh_status_activity(ctx: Context<'_>, reason: &'static str) {
-    let Some(guild_id) = ctx.guild_id() else {
-        return;
-    };
-    match channel_status::refresh_activity(
-        ctx.serenity_context(),
-        &ctx.data().database,
-        match i64::try_from(guild_id.get()) {
-            Ok(value) => value,
-            Err(error) => {
-                tracing::warn!(%error, reason, guild_id = guild_id.get(), "guild ID exceeds SQLite range");
-                return;
-            }
-        },
-        ctx.data().status.mode,
-    )
-    .await
-    {
-        Ok(active_count) => {
-            tracing::info!(
-                reason,
-                guild_id = guild_id.get(),
-                active_count,
-                "updated attendance activity"
-            );
-        }
-        Err(error) => {
-            tracing::warn!(%error, reason, guild_id = guild_id.get(), "failed to update attendance activity");
-        }
-    }
 }

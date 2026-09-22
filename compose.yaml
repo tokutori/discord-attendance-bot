@@ -7,11 +7,33 @@ services:
       - .env
     environment:
       DATABASE_URL: sqlite:///data/attendance.db
-      ATTENDANCE_PDF_FONT_PATH: /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
       ATTENDANCE_SQLITE_SYNCHRONOUS: full
     volumes:
       - attendance-data:/data
       - attendance-backups:/backups
+
+  view:
+    image: attendance-view:local
+    build:
+      context: .
+      target: view
+    profiles: ["view"]
+    restart: unless-stopped
+    env_file:
+      - .env.view
+    environment:
+      DATABASE_URL: sqlite:///data/attendance.db
+      ATTENDANCE_PDF_FONT_PATH: /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+    volumes:
+      - attendance-data:/data:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 128
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
 
   maintenance:
     image: discord-attendance-bot:local

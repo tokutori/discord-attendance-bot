@@ -4,6 +4,10 @@
 
 中央サービス型のマルチGuild SaaS、多言語対応、給与・法定勤怠管理を目的とした製品ではありません。法令上の勤怠・賃金計算に使用する場合は、必要な要件を別途確認してください。
 
+記録用 `discord-attendance-bot` と表示用 `attendance-view` を別プロセス・別 Discord Application として実行します。
+表示側は SQLite を readonly で参照し、CSV/PDF・ステータス表示の停止や再起動が記録側を停止させません。
+既存運用からの変更点・設定・更新手順は [分離設計と移行手順](docs/process-separation.md) を参照してください。
+
 ## 主な機能
 
 - 活動の開始、終了、再開、修正、削除、取り消し
@@ -21,19 +25,20 @@
 - `/attendance end [at] [note]`、短縮名 `/exit`
 - `/attendance continue`
 - `/attendance revert`
-- `/attendance status`
-- `/attendance list`
-- `/attendance history [limit]`
-- `/attendance month [target]`
+- `/attendanceview status`
+- `/attendanceview list`
+- `/attendanceview history [limit]`
+- `/attendanceview month [target]`
 - `/attendance edit record [start] [end] [note]`
 - `/attendance delete record`
 - `/attendance confirm id`
 - `/attendance erase confirmation:DELETE`
 - `/attendance help`
-- `/attendanceexport export month [mode] [confirm_public]`
+- `/attendanceview export month [mode] [confirm_public]`
 - `/attendanceexport userconfig [generation] [real_name] [role] [name_reading]`
 - `/attendanceexport clearuserconfig`
 - `/attendanceexport help`
+- `/attendanceview help`
 
 `at`は`HH:MM`、`target`は`YYYY-MM`、編集日時は`YYYY-MM-DD HH:MM`形式です。入力と表示には`ATTENDANCE_TIMEZONE`を使用し、DBにはUTC Unix timestampを保存します。
 
@@ -42,20 +47,21 @@
 推奨経路はDockerです。ソースから実行する場合は次が必要です。
 
 - Rust 1.94以上
-- Discord ApplicationとBot token
+- 記録用 Discord Application と Bot token（表示・出力も使う場合は別 Application と token を追加）
 - Botを追加できるDiscordサーバー
 - PDF出力に使う日本語TTF・OTF・TTCフォント
 
 ## Discord側の準備
 
-1. [Discord Developer Portal](https://discord.com/developers/applications)でApplicationとBotを作成し、tokenを取得します。
+1. 記録用と表示用それぞれについて [Discord Developer Portal](https://discord.com/developers/applications)でApplicationとBotを作成し、tokenを取得します。
 2. Installationで`bot`と`applications.commands`を使用して対象サーバーへ追加します。
 3. Developer Modeを有効にしてGuild IDをコピーします。
 4. ステータスTopicを使う場合だけ専用テキストチャンネルを作り、Channel IDをコピーします。
 
 BotはMessage Contentを読み取らないため、Privileged Gateway Intentsは不要です。必要なBot権限は次のとおりです。
 
-- 通常応答と帳票: View Channel、Send Messages、Embed Links、Attach Files
+- 記録側の通常応答: View Channel、Send Messages、Embed Links
+- 表示側の通常応答と帳票: View Channel、Send Messages、Embed Links、Attach Files
 - ステータスTopicを使う場合のみ: 対象チャンネルのManage Channels
 
 Manage Channelsは、可能ならサーバー全体ではなく専用チャンネルへの権限上書きで付与してください。月次exportの実行者にはDiscordのManage Guild権限が必要です。
@@ -68,11 +74,15 @@ Manage Channelsは、可能ならサーバー全体ではなく専用チャン�
 Copy-Item .env.example .env
 ```
 
+表示側は `config/view/.env.example` を `.env.view` へコピーして別途設定します。status/PDF 設定は表示側にのみ適用します。詳細は [移行手順](docs/process-separation.md) を参照してください。
+
 主要設定は次のとおりです。
 
 | 変数 | 必須 | 既定値 | 説明 |
 |---|---:|---|---|
-| `DISCORD_TOKEN` | はい | なし | Bot token |
+| `DISCORD_TOKEN` | 記録側 | なし | 記録用 Bot token |
+| `DISCORD_VIEW_TOKEN` | 表示側 | なし | 別 Application の表示用 Bot token |
+| `DISCORD_CORE_APPLICATION_ID` | 表示側 | なし | 記録用 Bot の Application ID（誤登録防止） |
 | `DISCORD_GUILD_ID` | はい | なし | このプロセスが担当するGuild ID |
 | `DATABASE_URL` | はい | なし | 永続SQLite URL。例:`sqlite://attendance.db` |
 | `ATTENDANCE_TIMEZONE` | いいえ | `Asia/Tokyo` | IANA timezone |
@@ -96,20 +106,24 @@ docker compose up -d
 docker compose logs -f bot
 ```
 
+上の手順は記録側のみを起動します。表示側の `.env.view` 設定後、`docker compose --profile view up -d --build --no-deps view` で表示側を追加します。
+
 DBとバックアップはDocker named volumeへ保存されます。コンテナを削除しても、volumeを明示的に削除しない限りデータは残ります。`docker compose down -v`はDBとバックアップvolumeを削除するため、通常運用では実行しないでください。
 
 ## ソースから起動する
 
 ```powershell
-cargo build --locked --release
-cargo run --locked --release
+cargo build --locked --release -p discord-attendance-bot --bins
+cargo run --locked --release -p discord-attendance-bot --bin discord-attendance-bot
 ```
+
+表示側は専用の `.env.view` を設定し、`cargo run --locked --release -p attendance-view --bin attendance-view` で起動します。
 
 互換モードは次のように起動します。
 
 ```powershell
-cargo run --locked -- test
-cargo run --locked --release -- release
+cargo run --locked -p discord-attendance-bot --bin discord-attendance-bot -- test
+cargo run --locked --release -p discord-attendance-bot --bin discord-attendance-bot -- release
 ```
 
 初回起動時にSQLiteファイルとmigration tableを自動作成します。Bot起動時には実行中SQLiteの版を検査し、既知のWAL-reset破損バグの影響を受ける版では起動しません。本リポジトリは修正版SQLite 3.51.3を同梱する`libsqlite3-sys`を固定しています。
@@ -159,14 +173,14 @@ Composeの`maintenance` serviceには`.env`を渡さないため、保守コマ�
 
 ## 復元
 
-復元は必ずBot停止中に実施します。
+復元は必ず記録 Bot と表示 Bot の両方を停止して実施します。
 
-1. Botを停止します。
+1. 記録 Bot と表示 Bot を停止します。
 2. 復元対象バックアップを`verify`します。
 3. 現在のDBと対応する`-wal`・`-shm`を、同じ復旧用ディレクトリへまとめて退避します。DBとWALを分離して使い回してはいけません。
 4. 元のDBパスが存在しない状態で`restore`を実行します。保守コマンドは既存パスを上書きしません。
 5. 復元DBをもう一度`verify`します。
-6. 可能ならテストGuildで起動確認してから本番Botを再開します。
+6. 可能ならテストGuildで起動確認してから記録 Bot、表示 Bot の順に再開します。
 
 ```powershell
 cargo run --locked --release --bin attendance-maintenance -- restore backups\attendance-YYYYMMDD-HHMMSS.db attendance.db
@@ -177,7 +191,7 @@ cargo run --locked --release --bin attendance-maintenance -- verify attendance.d
 
 - 更新前に検証済みバックアップを取得します。
 - 公開済みmigrationファイルは変更せず、schema変更は新しい連番migrationとして追加します。
-- `sqlx::migrate!`が起動時に未適用migrationを実行します。
+- 記録側だけが `sqlx::migrate!` により起動時に未適用migrationを実行します。
 - ロールバックが必要な場合は、Botを停止して更新前バックアップから復元します。
 - `v0.0`の試験DBと現在のv1 schemaには移行互換性がありません。旧DBを本番データとして使用している場合は、自動削除せず個別に移行計画を作成してください。
 
@@ -198,9 +212,9 @@ cargo fmt --check
 cargo test --locked
 cargo test --locked --doc
 cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo doc --locked --no-deps
+cargo doc --locked --workspace --no-deps
 cargo audit --deny warnings
-cargo package --locked
+python scripts/check-boundaries.py
 docker build --tag discord-attendance-bot:local .
 ```
 

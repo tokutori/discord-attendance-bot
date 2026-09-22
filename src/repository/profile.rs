@@ -1,22 +1,7 @@
+pub use attendance_query::sql::{get_user_profile, user_profiles_for_export};
 use sqlx::SqlitePool;
 
 use super::{UserProfile, UserProfileUpdate};
-
-pub async fn get_user_profile(
-    pool: &SqlitePool,
-    guild_id: i64,
-    user_id: i64,
-) -> Result<Option<UserProfile>, sqlx::Error> {
-    sqlx::query_as(
-        "SELECT guild_id, user_id, generation, real_name, role, name_reading, updated_at
-         FROM attendance_user_profiles
-         WHERE guild_id = ? AND user_id = ?",
-    )
-    .bind(guild_id)
-    .bind(user_id)
-    .fetch_optional(pool)
-    .await
-}
 
 pub async fn upsert_user_profile(
     pool: &SqlitePool,
@@ -46,21 +31,6 @@ pub async fn upsert_user_profile(
     .bind(now)
     .bind(now)
     .fetch_one(pool)
-    .await
-}
-
-pub async fn user_profiles_for_export(
-    pool: &SqlitePool,
-    guild_id: i64,
-) -> Result<Vec<UserProfile>, sqlx::Error> {
-    sqlx::query_as(
-        "SELECT guild_id, user_id, generation, real_name, role, name_reading, updated_at
-         FROM attendance_user_profiles
-         WHERE guild_id = ?
-         ORDER BY generation, real_name, user_id",
-    )
-    .bind(guild_id)
-    .fetch_all(pool)
     .await
 }
 

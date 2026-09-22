@@ -88,6 +88,7 @@ pub enum DatabaseSynchronous {
 pub struct AppConfig {
     pub mode: RunMode,
     pub token: String,
+    pub core_application_id: Option<u64>,
     pub guild_id: u64,
     pub database_url: String,
     pub status: StatusConfig,
@@ -98,7 +99,33 @@ pub struct AppConfig {
 
 impl AppConfig {
     pub fn from_env(mode: RunMode) -> anyhow::Result<Self> {
-        let token = required_env("DISCORD_TOKEN")?;
+        Self::load(mode, false, &optional_env)
+    }
+
+    pub fn view_from_env(mode: RunMode) -> anyhow::Result<Self> {
+        Self::load(mode, true, &optional_env)
+    }
+
+    fn load(
+        mode: RunMode,
+        view: bool,
+        lookup: &impl Fn(&str) -> Option<String>,
+    ) -> anyhow::Result<Self> {
+        let required_env = |name: &str| lookup(name).with_context(|| format!("{name} is not set"));
+        let token = required_env(if view {
+            "DISCORD_VIEW_TOKEN"
+        } else {
+            "DISCORD_TOKEN"
+        })?;
+        let core_application_id = if view {
+            Some(
+                required_env("DISCORD_CORE_APPLICATION_ID")?
+                    .parse::<u64>()
+                    .context("DISCORD_CORE_APPLICATION_ID must be a Discord snowflake")?,
+            )
+        } else {
+            None
+        };
         let guild_id_env = mode.guild_id_env();
         let guild_id = required_env(guild_id_env)?
             .parse::<u64>()
@@ -109,67 +136,78 @@ impl AppConfig {
             bail!("{database_url_env} must use a persistent SQLite file outside test mode");
         }
 
-        let status_channel_id_env = mode.status_channel_id_env();
-        let status_channel_id = optional_env(status_channel_id_env)
-            .map(|value| {
-                value
-                    .parse::<u64>()
-                    .with_context(|| format!("{status_channel_id_env} must be a Discord snowflake"))
-            })
-            .transpose()?;
-        let status_mode = parse_status_mode(
-            optional_env("ATTENDANCE_STATUS_MODE").as_deref(),
-            status_channel_id.is_some(),
-        )?;
-        if status_mode.is_enabled() && status_channel_id.is_none() {
-            bail!("{status_channel_id_env} is required when ATTENDANCE_STATUS_MODE is enabled");
-        }
-        let refresh_interval_seconds = optional_env("ATTENDANCE_STATUS_REFRESH_SECONDS")
-            .map(|value| {
-                value
-                    .parse::<u64>()
-                    .context("ATTENDANCE_STATUS_REFRESH_SECONDS must be an integer")
-            })
-            .transpose()?
-            .unwrap_or(600);
-        if !(60..=86_400).contains(&refresh_interval_seconds) {
-            bail!("ATTENDANCE_STATUS_REFRESH_SECONDS must be between 60 and 86400");
-        }
+        let status = if view {
+            let status_channel_id_env = mode.status_channel_id_env();
+            let status_channel_id = lookup(status_channel_id_env)
+                .map(|value| {
+                    value.parse::<u64>().with_context(|| {
+                        format!("{status_channel_id_env} must be a Discord snowflake")
+                    })
+                })
+                .transpose()?;
+            let status_mode = parse_status_mode(
+                lookup("ATTENDANCE_STATUS_MODE").as_deref(),
+                status_channel_id.is_some(),
+            )?;
+            if status_mode.is_enabled() && status_channel_id.is_none() {
+                bail!("{status_channel_id_env} is required when ATTENDANCE_STATUS_MODE is enabled");
+            }
+            let refresh_interval_seconds = lookup("ATTENDANCE_STATUS_REFRESH_SECONDS")
+                .map(|value| {
+                    value
+                        .parse::<u64>()
+                        .context("ATTENDANCE_STATUS_REFRESH_SECONDS must be an integer")
+                })
+                .transpose()?
+                .unwrap_or(600);
+            if !(60..=86_400).contains(&refresh_interval_seconds) {
+                bail!("ATTENDANCE_STATUS_REFRESH_SECONDS must be between 60 and 86400");
+            }
 
-        let timezone = optional_env("ATTENDANCE_TIMEZONE")
+            StatusConfig {
+                mode: status_mode,
+                channel_id: status_channel_id,
+                refresh_interval_seconds,
+            }
+        } else {
+            StatusConfig {
+                mode: StatusMode::Disabled,
+                channel_id: None,
+                refresh_interval_seconds: 600,
+            }
+        };
+
+        let timezone = lookup("ATTENDANCE_TIMEZONE")
             .unwrap_or_else(|| "Asia/Tokyo".into())
             .parse::<Tz>()
             .context("ATTENDANCE_TIMEZONE must be an IANA timezone such as Asia/Tokyo")?;
         let auto_end_time = parse_auto_end_time(
-            optional_env("ATTENDANCE_AUTO_END_TIME")
+            lookup("ATTENDANCE_AUTO_END_TIME")
                 .as_deref()
                 .unwrap_or("21:00"),
         )?;
-        let database_synchronous = parse_database_synchronous(
-            optional_env("ATTENDANCE_SQLITE_SYNCHRONOUS")
-                .as_deref()
-                .unwrap_or("full"),
-        )?;
+        let database_synchronous = if view {
+            DatabaseSynchronous::Full
+        } else {
+            parse_database_synchronous(
+                lookup("ATTENDANCE_SQLITE_SYNCHRONOUS")
+                    .as_deref()
+                    .unwrap_or("full"),
+            )?
+        };
 
         Ok(Self {
             mode,
             token,
+            core_application_id,
             guild_id,
             database_url,
-            status: StatusConfig {
-                mode: status_mode,
-                channel_id: status_channel_id,
-                refresh_interval_seconds,
-            },
+            status,
             timezone,
             auto_end_time,
             database_synchronous,
         })
     }
-}
-
-fn required_env(name: &str) -> anyhow::Result<String> {
-    optional_env(name).with_context(|| format!("{name} is not set"))
 }
 
 fn optional_env(name: &str) -> Option<String> {
@@ -215,6 +253,52 @@ fn parse_database_synchronous(value: &str) -> anyhow::Result<DatabaseSynchronous
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn core_never_loads_view_settings_or_credentials() {
+        let lookup = |name: &str| match name {
+            "DISCORD_TOKEN" => Some("dummy-core-token".into()),
+            "DISCORD_GUILD_ID" => Some("1".into()),
+            "DATABASE_URL" => Some("sqlite://dummy.db".into()),
+            name if name.starts_with("ATTENDANCE_STATUS_")
+                || name == "DISCORD_VIEW_TOKEN"
+                || name == "DISCORD_CORE_APPLICATION_ID" =>
+            {
+                panic!("core must not consult view setting {name}");
+            }
+            _ => None,
+        };
+        let config = AppConfig::load(RunMode::Standalone, false, &lookup).unwrap();
+        assert_eq!(config.status.mode, StatusMode::Disabled);
+        assert_eq!(config.token, "dummy-core-token");
+    }
+
+    #[test]
+    fn view_uses_only_its_own_token_and_requires_core_identity() {
+        let lookup = |name: &str| match name {
+            "DISCORD_VIEW_TOKEN" => Some("dummy-view-token".into()),
+            "DISCORD_GUILD_ID" => Some("1".into()),
+            "DATABASE_URL" => Some("sqlite://dummy.db".into()),
+            "DISCORD_CORE_APPLICATION_ID" => Some("2".into()),
+            "DISCORD_TOKEN" | "ATTENDANCE_SQLITE_SYNCHRONOUS" => {
+                panic!("view must not read writer config")
+            }
+            _ => None,
+        };
+        let config = AppConfig::load(RunMode::Standalone, true, &lookup).unwrap();
+        assert_eq!(config.token, "dummy-view-token");
+        assert_eq!(config.core_application_id, Some(2));
+        assert!(
+            AppConfig::load(RunMode::Standalone, true, &|name| {
+                if name == "DISCORD_CORE_APPLICATION_ID" {
+                    None
+                } else {
+                    lookup(name)
+                }
+            })
+            .is_err()
+        );
+    }
 
     #[test]
     fn parses_supported_modes_and_defaults_to_standalone() {

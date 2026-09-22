@@ -3,9 +3,7 @@
 use std::{env, str::FromStr, time::Duration};
 
 use anyhow::Context as _;
-use discord_attendance_bot::{
-    Data, channel_status, commands, config, database, framework_error, time,
-};
+use discord_attendance_bot::{Data, auto_end, commands, config, database, framework_error, time};
 use poise::serenity_prelude as serenity;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use tracing::info;
@@ -18,7 +16,6 @@ async fn main() -> anyhow::Result<()> {
     let app_config = config::AppConfig::from_env(mode)?;
     let guild_id = app_config.guild_id;
     let guild_database_id = i64::try_from(guild_id).context("guild ID exceeds SQLite range")?;
-    let status = app_config.status;
     let auto_end_enabled = app_config.auto_end_time.is_some();
     time::install_time_policy(time::TimePolicy {
         timezone: app_config.timezone,
@@ -42,6 +39,12 @@ async fn main() -> anyhow::Result<()> {
         .synchronous(synchronous)
         .busy_timeout(Duration::from_secs(5))
         .foreign_keys(true);
+    // A live process is not enough: the pool may reap every physical connection.
+    // Keep a separate autocommit connection open until the client stops so that
+    // readonly view mounts can restart even after a long period without commands.
+    let wal_anchor = discord_attendance_bot::wal_anchor::WalAnchor::open(&options)
+        .await
+        .context("failed to retain the recording WAL connection")?;
     let database = SqlitePoolOptions::new()
         .max_connections(5)
         .connect_with(options)
@@ -86,7 +89,7 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
                 info!(mode = mode.as_str(), guild_id, "registered guild commands");
                 if auto_end_enabled {
-                    match channel_status::apply_missed_auto_ends(&database, guild_database_id).await {
+                    match auto_end::apply_missed_auto_ends(&database, guild_database_id).await {
                         Ok(count) if count > 0 => {
                             info!(guild_id, count, "applied missed automatic attendance ends");
                         }
@@ -96,38 +99,13 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                 }
-                if status.mode.is_enabled() {
-                    if let Err(error) = channel_status::refresh_status(
-                        ctx,
-                        &database,
-                        guild_database_id,
-                        status,
-                    )
-                    .await
-                    {
-                        tracing::warn!(
-                            %error,
-                            guild_id,
-                            status_channel_id = status.channel_id,
-                            "failed to refresh activity and status topic after startup recovery"
-                        );
-                    }
-                    channel_status::spawn_periodic_refresh(
-                        ctx,
-                        database.clone(),
-                        guild_database_id,
-                        status,
-                    );
-                }
                 if auto_end_enabled {
-                    channel_status::spawn_auto_end_scheduler(
-                        ctx,
+                    auto_end::spawn_auto_end_scheduler(
                         database.clone(),
                         guild_database_id,
-                        status.mode,
                     );
                 }
-                Ok(Data { database, status })
+                Ok(Data { database })
             })
         })
         .build();
@@ -138,5 +116,6 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("failed to create Discord client")?;
     client.start().await.context("Discord client stopped")?;
+    wal_anchor.close().await?;
     Ok(())
 }

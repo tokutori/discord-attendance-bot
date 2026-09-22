@@ -8,9 +8,7 @@ use crate::{
     time::{self, format_datetime, format_duration},
 };
 
-use super::common::{
-    acknowledge_auto_end_notice, defer_ephemeral, ids, peek_auto_end_notice, send_response,
-};
+use super::common::{defer_ephemeral, ids, peek_auto_end_notice, send_response};
 
 /// 活動時間記録コマンドの使い方を表示する。
 #[poise::command(slash_command, guild_only)]
@@ -19,6 +17,7 @@ pub async fn help(ctx: Context<'_>) -> Result<(), Error> {
     ctx.send(
         CreateReply::default()
             .embed(presentation::help_embed(ctx.author().display_name()))
+            .embed(presentation::export_help_embed())
             .ephemeral(true),
     )
     .await?;
@@ -109,15 +108,7 @@ pub async fn history(
     }
     ctx.send(CreateReply::default().embed(embed).ephemeral(true))
         .await?;
-    if let Some(notice) = notice
-        && let Err(error) = acknowledge_auto_end_notice(ctx, notice.event_id).await
-    {
-        tracing::warn!(
-            %error,
-            event_id = notice.event_id,
-            "response sent but failed to acknowledge automatic-end notice"
-        );
-    }
+
     Ok(())
 }
 
@@ -153,15 +144,7 @@ pub async fn month(
     }
     ctx.send(CreateReply::default().embed(embed).ephemeral(true))
         .await?;
-    if let Some(notice) = notice
-        && let Err(error) = acknowledge_auto_end_notice(ctx, notice.event_id).await
-    {
-        tracing::warn!(
-            %error,
-            event_id = notice.event_id,
-            "response sent but failed to acknowledge automatic-end notice"
-        );
-    }
+
     Ok(())
 }
 
