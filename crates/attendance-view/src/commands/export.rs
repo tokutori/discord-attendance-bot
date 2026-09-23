@@ -54,6 +54,11 @@ pub async fn export(
             .as_ref()
             .and_then(|m| m.permissions),
         application.interaction.app_permissions,
+        application
+            .interaction
+            .channel
+            .as_ref()
+            .map(|channel| channel.kind),
     )?;
     if publish && confirm_public != Some(true) {
         ctx.send(
@@ -180,15 +185,31 @@ pub async fn export(
 fn check_permissions(
     user: Option<serenity::Permissions>,
     bot: Option<serenity::Permissions>,
+    channel_kind: Option<serenity::ChannelType>,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
         user.is_some_and(|p| p.contains(serenity::Permissions::MANAGE_GUILD)
             || p.contains(serenity::Permissions::ADMINISTRATOR)),
         "サーバー管理権限が必要である"
     );
-    let required = serenity::Permissions::SEND_MESSAGES
-        | serenity::Permissions::EMBED_LINKS
-        | serenity::Permissions::ATTACH_FILES;
+    // Preview retains the same conservative permission policy as publish.
+    // Thread send permission is independent of the parent's SEND_MESSAGES.
+    let send_permission = match channel_kind {
+        Some(
+            serenity::ChannelType::Text
+            | serenity::ChannelType::News
+            | serenity::ChannelType::Voice
+            | serenity::ChannelType::Stage,
+        ) => serenity::Permissions::SEND_MESSAGES,
+        Some(
+            serenity::ChannelType::PublicThread
+            | serenity::ChannelType::PrivateThread
+            | serenity::ChannelType::NewsThread,
+        ) => serenity::Permissions::SEND_MESSAGES_IN_THREADS,
+        _ => anyhow::bail!("対応する送信先のチャンネル種別を確認できない"),
+    };
+    let required =
+        send_permission | serenity::Permissions::EMBED_LINKS | serenity::Permissions::ATTACH_FILES;
     anyhow::ensure!(
         bot.is_some_and(
             |p| p.contains(required) || p.contains(serenity::Permissions::ADMINISTRATOR)
@@ -205,6 +226,8 @@ mod tests {
     #[test]
     fn export_payload_permissions_fail_closed() {
         use poise::serenity_prelude::Permissions as P;
+        let check_permissions =
+            |user, bot| super::check_permissions(user, bot, Some(serenity::ChannelType::Text));
         let bot = P::SEND_MESSAGES | P::EMBED_LINKS | P::ATTACH_FILES;
         assert!(check_permissions(Some(P::MANAGE_GUILD), Some(bot)).is_ok());
         assert!(check_permissions(Some(P::ADMINISTRATOR), Some(P::ADMINISTRATOR)).is_ok());
@@ -214,6 +237,62 @@ mod tests {
         assert!(check_permissions(Some(P::MANAGE_GUILD), None).is_err());
         for bit in [P::SEND_MESSAGES, P::EMBED_LINKS, P::ATTACH_FILES] {
             assert!(check_permissions(Some(P::MANAGE_GUILD), Some(bot - bit)).is_err());
+        }
+    }
+
+    #[test]
+    fn export_selects_send_permission_for_each_supported_channel_kind() {
+        use poise::serenity_prelude::{ChannelType as C, Permissions as P};
+        let files = P::EMBED_LINKS | P::ATTACH_FILES;
+        for (kind, required, unrelated) in [
+            (C::Text, P::SEND_MESSAGES, P::SEND_MESSAGES_IN_THREADS),
+            (C::News, P::SEND_MESSAGES, P::SEND_MESSAGES_IN_THREADS),
+            (C::Voice, P::SEND_MESSAGES, P::SEND_MESSAGES_IN_THREADS),
+            (C::Stage, P::SEND_MESSAGES, P::SEND_MESSAGES_IN_THREADS),
+            (
+                C::PublicThread,
+                P::SEND_MESSAGES_IN_THREADS,
+                P::SEND_MESSAGES,
+            ),
+            (
+                C::PrivateThread,
+                P::SEND_MESSAGES_IN_THREADS,
+                P::SEND_MESSAGES,
+            ),
+            (C::NewsThread, P::SEND_MESSAGES_IN_THREADS, P::SEND_MESSAGES),
+        ] {
+            let check = |user, bot| check_permissions(user, bot, Some(kind));
+            assert!(
+                check(Some(P::MANAGE_GUILD), Some(files | required)).is_ok(),
+                "{kind:?}"
+            );
+            assert!(
+                check(Some(P::MANAGE_GUILD), Some(files | unrelated)).is_err(),
+                "{kind:?}"
+            );
+            assert!(check(Some(P::ADMINISTRATOR), Some(P::ADMINISTRATOR)).is_ok());
+            for bit in [P::EMBED_LINKS, P::ATTACH_FILES] {
+                assert!(check(Some(P::MANAGE_GUILD), Some((files | required) - bit)).is_err());
+            }
+            assert!(check(None, Some(files | required)).is_err());
+            assert!(check(Some(P::empty()), Some(files | required)).is_err());
+            assert!(check(Some(P::MANAGE_GUILD), None).is_err());
+        }
+    }
+
+    #[test]
+    fn export_rejects_missing_and_unsupported_channel_kinds_even_for_admins() {
+        use poise::serenity_prelude::{ChannelType as C, Permissions as P};
+        for kind in [
+            None,
+            Some(C::Private),
+            Some(C::Category),
+            Some(C::Forum),
+            Some(C::Unknown(255)),
+        ] {
+            assert!(
+                check_permissions(Some(P::ADMINISTRATOR), Some(P::ADMINISTRATOR), kind).is_err()
+            );
         }
     }
 
