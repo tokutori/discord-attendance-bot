@@ -1,77 +1,119 @@
 use std::{path::Path, time::Duration};
 
 use anyhow::Context as _;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
+use tempfile::TempPath;
 
 use crate::database;
 
-pub async fn backup_database(source: &Path, destination: &Path) -> anyhow::Result<()> {
-    if destination.exists() {
-        anyhow::bail!(
-            "backup destination already exists: {}",
-            destination.display()
-        );
-    }
+/// Unique, private staging file on the destination filesystem. It is empty so
+/// SQLite VACUUM INTO may populate it, and is removed on all error paths.
+fn prepare_destination(destination: &Path) -> anyhow::Result<TempPath> {
+    anyhow::ensure!(
+        !destination.exists(),
+        "destination already exists: {}",
+        destination.display()
+    );
     let parent = destination
         .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    if !parent.is_dir() {
-        anyhow::bail!(
-            "backup destination directory does not exist: {}",
-            parent.display()
-        );
-    }
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    Ok(tempfile::Builder::new()
+        .prefix(".attendance-")
+        .tempfile_in(parent)?
+        .into_temp_path())
+}
 
-    let file_name = destination
-        .file_name()
-        .context("backup destination must have a file name")?
-        .to_string_lossy();
-    let partial =
-        destination.with_file_name(format!(".{file_name}.partial-{}", std::process::id()));
-    if partial.exists() {
-        anyhow::bail!(
-            "temporary backup destination already exists: {}",
-            partial.display()
-        );
-    }
+fn finalize(partial: TempPath, destination: &Path) -> anyhow::Result<()> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&partial)?
+        .sync_all()?;
+    // Unlike rename, this fails if another process created the destination
+    // after our initial check. Never fall back to an overwriting operation.
+    partial.persist_noclobber(destination).with_context(|| {
+        format!(
+            "failed to finalize database without overwriting {}",
+            destination.display()
+        )
+    })?;
+    Ok(())
+}
 
-    let source_options = SqliteConnectOptions::new()
+pub async fn backup_database(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    let partial = prepare_destination(destination)?;
+    let options = SqliteConnectOptions::new()
         .filename(source)
         .create_if_missing(false)
         .busy_timeout(Duration::from_secs(30))
         .foreign_keys(true);
-    let source_pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(source_options)
-        .await
-        .with_context(|| format!("failed to open source database: {}", source.display()))?;
-    database::validate_runtime_sqlite(&source_pool).await?;
-
-    let partial_text = partial
-        .to_str()
-        .context("backup destination path is not valid UTF-8")?;
-    let backup_result = sqlx::query("VACUUM INTO ?")
-        .bind(partial_text)
-        .execute(&source_pool)
+    let mut connection = SqliteConnection::connect_with(&options).await?;
+    let version: String = sqlx::query_scalar("SELECT sqlite_version()")
+        .fetch_one(&mut connection)
+        .await?;
+    database::ensure_safe_sqlite_version(&version)?;
+    // VACUUM INTO requires an existing empty file or an absent path.
+    let result = sqlx::query("VACUUM INTO ?")
+        .bind(partial.to_str().context("backup path is not valid UTF-8")?)
+        .execute(&mut connection)
         .await;
-    source_pool.close().await;
-    if let Err(error) = backup_result {
-        let _ = std::fs::remove_file(&partial);
-        return Err(error).context("SQLite VACUUM INTO backup failed");
-    }
+    connection.close().await?;
+    result.context("SQLite VACUUM INTO backup failed")?;
+    verify_database(&partial)
+        .await
+        .context("created backup did not pass verification")?;
+    finalize(partial, destination)
+}
 
-    if let Err(error) = verify_database(&partial).await {
-        let _ = std::fs::remove_file(&partial);
-        return Err(error).context("created backup did not pass integrity verification");
-    }
-    std::fs::rename(&partial, destination).with_context(|| {
-        format!(
-            "failed to finalize backup {} -> {}",
-            partial.display(),
-            destination.display()
-        )
-    })?;
+const SCHEMA_SQL: &str = "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY type,name";
+type SchemaObject = (String, String, String, Option<String>);
+static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+
+async fn verify_connection(connection: &mut SqliteConnection) -> anyhow::Result<()> {
+    let version: String = sqlx::query_scalar("SELECT sqlite_version()")
+        .fetch_one(&mut *connection)
+        .await?;
+    database::ensure_safe_sqlite_version(&version)?;
+    // One consistent snapshot for metadata, structure and relationship checks.
+    let mut tx = connection.begin().await?;
+    let results = sqlx::query_scalar::<_, String>("PRAGMA integrity_check")
+        .fetch_all(&mut *tx)
+        .await?;
+    anyhow::ensure!(
+        results.as_slice() == ["ok"],
+        "SQLite integrity check failed"
+    );
+    anyhow::ensure!(
+        sqlx::query("PRAGMA foreign_key_check")
+            .fetch_optional(&mut *tx)
+            .await?
+            .is_none(),
+        "database contains foreign key violations"
+    );
+    let ledger: Vec<(i64, bool, Vec<u8>)> =
+        sqlx::query_as("SELECT version,success,checksum FROM _sqlx_migrations ORDER BY version")
+            .fetch_all(&mut *tx)
+            .await?;
+    let expected_ledger: Vec<_> = MIGRATOR
+        .iter()
+        .map(|m| (m.version, true, m.checksum.to_vec()))
+        .collect();
+    anyhow::ensure!(
+        ledger == expected_ledger,
+        "unsupported or incomplete migration metadata"
+    );
+    let actual: Vec<SchemaObject> = sqlx::query_as(SCHEMA_SQL).fetch_all(&mut *tx).await?;
+    let mut expected = SqliteConnection::connect("sqlite::memory:").await?;
+    MIGRATOR.run(&mut expected).await?;
+    let expected_schema: Vec<SchemaObject> =
+        sqlx::query_as(SCHEMA_SQL).fetch_all(&mut expected).await?;
+    expected.close().await?;
+    anyhow::ensure!(
+        actual == expected_schema,
+        "database schema differs from current migrations"
+    );
+    tx.commit().await?;
     Ok(())
 }
 
@@ -82,91 +124,21 @@ pub async fn verify_database(path: &Path) -> anyhow::Result<()> {
         .create_if_missing(false)
         .busy_timeout(Duration::from_secs(30))
         .foreign_keys(true);
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to open database for verification: {}",
-                path.display()
-            )
-        })?;
-    database::validate_runtime_sqlite(&pool).await?;
-    let results = sqlx::query_scalar::<_, String>("PRAGMA integrity_check")
-        .fetch_all(&pool)
-        .await
-        .context("PRAGMA integrity_check failed")?;
-    let migration_table_exists: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM sqlite_master
-         WHERE type = 'table' AND name = '_sqlx_migrations'",
-    )
-    .fetch_one(&pool)
-    .await?;
-    pool.close().await;
-    if results.as_slice() != ["ok"] {
-        anyhow::bail!("database integrity check failed: {}", results.join("; "));
-    }
-    if migration_table_exists != 1 {
-        anyhow::bail!("database does not contain SQLx migration metadata");
-    }
-    Ok(())
+    let mut connection = SqliteConnection::connect_with(&options).await?;
+    let result = verify_connection(&mut connection).await;
+    connection.close().await?;
+    result
 }
 
-/// Restores a verified backup to a path that does not yet exist.
-///
-/// The caller must stop the bot and move the current database together with
-/// any `-wal` and `-shm` files out of the way first. Refusing to overwrite an
-/// existing destination prevents accidental in-place replacement.
+/// Both bots must be stopped before restoring. Never replaces an existing path.
 pub async fn restore_database(backup: &Path, destination: &Path) -> anyhow::Result<()> {
-    if destination.exists() {
-        anyhow::bail!(
-            "restore destination already exists; stop the bot and move the current database aside first: {}",
-            destination.display()
-        );
-    }
+    let partial = prepare_destination(destination)?;
     verify_database(backup).await?;
-    let parent = destination
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    if !parent.is_dir() {
-        anyhow::bail!(
-            "restore destination directory does not exist: {}",
-            parent.display()
-        );
-    }
-    let file_name = destination
-        .file_name()
-        .context("restore destination must have a file name")?
-        .to_string_lossy();
-    let partial =
-        destination.with_file_name(format!(".{file_name}.restore-{}", std::process::id()));
-    if partial.exists() {
-        anyhow::bail!(
-            "temporary restore destination already exists: {}",
-            partial.display()
-        );
-    }
-    std::fs::copy(backup, &partial).with_context(|| {
-        format!(
-            "failed to copy backup {} to {}",
-            backup.display(),
-            partial.display()
-        )
-    })?;
-    if let Err(error) = verify_database(&partial).await {
-        let _ = std::fs::remove_file(&partial);
-        return Err(error).context("restored copy did not pass integrity verification");
-    }
-    std::fs::rename(&partial, destination).with_context(|| {
-        format!(
-            "failed to finalize restore {} -> {}",
-            partial.display(),
-            destination.display()
-        )
-    })?;
-    Ok(())
+    std::fs::copy(backup, &partial)?;
+    verify_database(&partial)
+        .await
+        .context("restored copy did not pass verification")?;
+    finalize(partial, destination)
 }
 
 #[cfg(test)]
@@ -254,5 +226,89 @@ mod tests {
         restore_database(&backup, &restored).await.unwrap();
         verify_database(&restored).await.unwrap();
         assert!(restore_database(&backup, &restored).await.is_err());
+    }
+    #[test]
+    fn competing_publish_never_overwrites_a_destination() {
+        let dir = tempdir().unwrap();
+        let destination = dir.path().join("result.db");
+        let first = prepare_destination(&destination).unwrap();
+        let second = prepare_destination(&destination).unwrap();
+        std::fs::write(&first, b"first verified snapshot").unwrap();
+        std::fs::write(&second, b"second verified snapshot").unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let tasks: Vec<_> = [first, second]
+            .into_iter()
+            .map(|partial| {
+                let barrier = barrier.clone();
+                let destination = destination.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    finalize(partial, &destination).is_ok()
+                })
+            })
+            .collect();
+        let wins = tasks
+            .into_iter()
+            .map(|task| usize::from(task.join().unwrap()))
+            .sum::<usize>();
+        assert_eq!(wins, 1);
+        let bytes = std::fs::read(&destination).unwrap();
+        assert!(bytes == b"first verified snapshot" || bytes == b"second verified snapshot");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn file_created_after_staging_is_preserved() {
+        let dir = tempdir().unwrap();
+        let destination = dir.path().join("result.db");
+        let partial = prepare_destination(&destination).unwrap();
+        std::fs::write(&partial, b"snapshot").unwrap();
+        std::fs::write(&destination, b"competing file").unwrap();
+        assert!(finalize(partial, &destination).is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"competing file");
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_schema_ledger_and_foreign_keys_without_publishing() {
+        for damage in [
+            "DROP TABLE attendance_panels",
+            "DROP INDEX attendance_panel_receipts_owner",
+            "CREATE TRIGGER sqliteX_extra AFTER INSERT ON attendance_sessions BEGIN SELECT 1; END",
+            "UPDATE _sqlx_migrations SET success=0",
+            "UPDATE _sqlx_migrations SET checksum=x'00'",
+            "DELETE FROM _sqlx_migrations",
+            "DROP TABLE _sqlx_migrations; CREATE TABLE _sqlx_migrations(version INTEGER)",
+            "INSERT INTO attendance_auto_end_events(session_id,guild_id,user_id,automatic_ended_at,applied_at,change_id_at_application) VALUES(999,1,2,100,100,0)",
+        ] {
+            let dir = tempdir().unwrap();
+            let source = dir.path().join("source.db");
+            let options = SqliteConnectOptions::new()
+                .filename(&source)
+                .create_if_missing(true)
+                .foreign_keys(false);
+            let mut conn = SqliteConnection::connect_with(&options).await.unwrap();
+            MIGRATOR.run(&mut conn).await.unwrap();
+            sqlx::raw_sql(damage).execute(&mut conn).await.unwrap();
+            conn.close().await.unwrap();
+            assert!(verify_database(&source).await.is_err(), "{damage}");
+            let destination = dir.path().join("output.db");
+            assert!(
+                backup_database(&source, &destination).await.is_err(),
+                "{damage}"
+            );
+            assert!(!destination.exists());
+            assert!(
+                restore_database(&source, &destination).await.is_err(),
+                "{damage}"
+            );
+            assert!(!destination.exists());
+            assert!(!std::fs::read_dir(dir.path()).unwrap().any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".attendance-")
+            }));
+        }
     }
 }
