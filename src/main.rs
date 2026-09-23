@@ -62,6 +62,11 @@ async fn main() -> anyhow::Result<()> {
                 commands::exit(),
                 commands::attendanceexport(),
             ],
+            command_check: Some(|ctx| Box::pin(async move {
+                config::require_guild(ctx.data().guild_id, ctx.guild_id().map(|id| id.get()))?;
+                Ok(true)
+            })),
+            skip_checks_for_owners: false,
             on_error: |error| {
                 Box::pin(async move {
                     if let Err(error) = framework_error::handle(error).await {

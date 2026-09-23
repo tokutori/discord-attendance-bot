@@ -97,7 +97,7 @@ Docker Composeでは、記録用・表示用の値を同じ `.env` に設定し�
 | `ATTENDANCE_PDF_FONT_PATH` | いいえ | OS候補を検索 | 日本語フォントへのパス |
 | `RUST_LOG` | いいえ | info相当 | ログフィルタ |
 
-永続運用モードではインメモリSQLiteを拒否します。SQLite WALはネットワークファイルシステム向けではないため、DBは実行ホストのローカルディスクまたはDockerのローカルvolumeに置いてください。同じGuild・DB・tokenに対して複数のBotプロセスを同時起動しないでください。
+永続運用モードではインメモリSQLiteを拒否します。SQLite WALはネットワークファイルシステム向けではないため、DBは実行ホストのローカルディスクまたはDockerのローカルvolumeに置いてください。同じGuild・DB・tokenに対して複数のBotプロセスを同時起動しないでください。設定対象外のGuildから届くコマンドはcore・viewとも拒否します。Guildやモードを切り替えた場合も、旧Guildに残ったコマンドから現在のDBを操作できません。
 
 以前の`test` / `release`分離運用も互換性のため利用できます。起動引数を付けると、`.env.example`末尾に記載したモード別変数を使用します。
 

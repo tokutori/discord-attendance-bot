@@ -102,6 +102,17 @@ pub async fn handle(
     use poise::FrameworkError;
 
     match error {
+        FrameworkError::CommandCheckFailed { ctx, .. } => {
+            ctx.send(
+                poise::CreateReply::default()
+                    .embed(presentation::error_embed(
+                        "対象サーバーを確認してください",
+                        "このBotに設定されたサーバーで実行してほしい。",
+                    ))
+                    .ephemeral(true),
+            )
+            .await?;
+        }
         FrameworkError::Command { ctx, error, .. } => {
             tracing::error!(%error, "attendance command failed");
             let (title, description) = explain_command_error(&error);

@@ -17,13 +17,9 @@ enum ExportMode {
 }
 
 fn ids(ctx: Context<'_>) -> Result<(i64, i64), Error> {
-    let guild = ctx
-        .guild_id()
-        .ok_or_else(|| anyhow::anyhow!("このコマンドはサーバー内でのみ使用できる"))?;
-    Ok((
-        i64::try_from(guild.get())?,
-        i64::try_from(ctx.author().id.get())?,
-    ))
+    let guild =
+        crate::config::require_guild(ctx.data().guild_id, ctx.guild_id().map(|guild| guild.get()))?;
+    Ok((guild, i64::try_from(ctx.author().id.get())?))
 }
 
 fn attachment_size_limit(ctx: Context<'_>) -> usize {

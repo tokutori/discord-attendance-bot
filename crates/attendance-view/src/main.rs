@@ -31,6 +31,13 @@ async fn main() -> anyhow::Result<()> {
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
             commands: vec![commands::attendanceview()],
+            command_check: Some(|ctx| {
+                Box::pin(async move {
+                    config::require_guild(ctx.data().guild_id, ctx.guild_id().map(|id| id.get()))?;
+                    Ok(true)
+                })
+            }),
+            skip_checks_for_owners: false,
             on_error: |error| {
                 Box::pin(async move {
                     if let Err(error) = framework_error::handle(error).await {
@@ -57,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
                         status,
                     );
                 }
-                Ok(Data { database })
+                Ok(Data { database, guild_id })
             })
         })
         .build();
