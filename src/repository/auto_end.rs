@@ -70,9 +70,11 @@ pub async fn apply_due_auto_ends(
     .await?;
     let mut notices = Vec::new();
     for session in sessions {
-        let Some(automatic_ended_at) = session
-            .open_since
-            .and_then(|open_since| time::auto_end_timestamp(open_since, now_utc))
+        let Some(open_since) = session.open_since else {
+            continue;
+        };
+        let Some(automatic_ended_at) = time::auto_end_timestamp(open_since, now_utc)
+            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?
         else {
             continue;
         };

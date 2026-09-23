@@ -10,7 +10,7 @@
 - [ ] 記録側の `/join`・`/exit`・再開と、表示側の `/attendanceview` が登録され、表示側再登録後も記録コマンドが維持される。
 - [ ] `docker compose --profile view stop view` の間も記録でき、`docker compose --profile view start view` 後の履歴に停止中の記録が現れる。記録側コンテナを再起動していない。
 - [ ] `docker compose --profile view build view`、`docker compose --profile view up -d --no-deps view` による表示側だけの更新中も記録できる。
-- [ ] 自動終了を使う運用では、表示側停止中も設定時刻に自動終了する。
+- [ ] 自動終了を使う運用では、表示側停止中も日付変更時（または起動時）の処理で所定の自動終了時刻が記録される。
 
 ## 常設ボタンパネル（PC・モバイル双方）
 

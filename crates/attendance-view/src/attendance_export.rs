@@ -3,7 +3,7 @@ mod pdf;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 
 use crate::{
     attendance::YearMonth,
@@ -103,8 +103,23 @@ pub fn build_monthly_export(
     profiles: &[UserProfile],
     now: DateTime<Utc>,
 ) -> anyhow::Result<MonthlyExport> {
-    let timezone = time::display_timezone();
-    let (range_start, range_end) = time::month_bounds(year_month)?;
+    build_monthly_export_in(
+        year_month,
+        sessions,
+        profiles,
+        now,
+        time::display_timezone(),
+    )
+}
+
+fn build_monthly_export_in(
+    year_month: YearMonth,
+    sessions: &[crate::attendance::AttendanceSession],
+    profiles: &[UserProfile],
+    now: DateTime<Utc>,
+    timezone: chrono_tz::Tz,
+) -> anyhow::Result<MonthlyExport> {
+    let (range_start, range_end) = time::month_bounds_in(year_month, timezone)?;
     let first_date = NaiveDate::from_ymd_opt(year_month.year, year_month.month, 1)
         .ok_or_else(|| anyhow::anyhow!("invalid export month"))?;
     let next_date = if year_month.month == 12 {
@@ -170,16 +185,11 @@ pub fn build_monthly_export(
             if day_index >= day_count {
                 break;
             }
-            let next_midnight_local = date
-                .checked_add_signed(Duration::days(1))
-                .ok_or_else(|| anyhow::anyhow!("invalid next calendar date"))?
-                .and_hms_opt(0, 0, 0)
-                .ok_or_else(|| anyhow::anyhow!("invalid local midnight"))?;
-            let next_midnight = timezone
-                .from_local_datetime(&next_midnight_local)
-                .single()
-                .ok_or_else(|| anyhow::anyhow!("invalid local midnight"))?
-                .timestamp();
+            let next_date = date
+                .succ_opt()
+                .ok_or_else(|| anyhow::anyhow!("invalid next calendar date"))?;
+            let next_midnight = time::day_boundary_in(timezone, next_date)?;
+            anyhow::ensure!(next_midnight > cursor, "calendar boundary did not advance");
             let segment_end = effective_end.min(next_midnight);
             let seconds = segment_end.saturating_sub(cursor);
             row.daily_seconds[day_index] = row.daily_seconds[day_index].saturating_add(seconds);
@@ -631,5 +641,36 @@ mod tests {
         // a host-specific byte limit; the send path handles Discord's actual
         // attachment limit and reports an actionable error.
         assert!(pdf.windows(b"%%EOF".len()).any(|window| window == b"%%EOF"));
+    }
+    #[test]
+    fn totals_survive_midnight_transitions_and_skipped_dates() {
+        for (timezone, year, month, day, start_hour, end_day, end_hour, expected_hours) in [
+            (chrono_tz::America::Havana, 2026, 3, 7, 12, 7, 13, 1),
+            (chrono_tz::America::Havana, 2026, 3, 7, 23, 9, 1, 25),
+            (chrono_tz::America::Havana, 2026, 11, 1, 0, 2, 0, 25),
+            (chrono_tz::Pacific::Apia, 2011, 12, 29, 23, 31, 1, 2),
+        ] {
+            let start = timezone
+                .with_ymd_and_hms(year, month, day, start_hour, 0, 0)
+                .earliest()
+                .unwrap()
+                .timestamp();
+            let end = timezone
+                .with_ymd_and_hms(year, month, end_day, end_hour, 0, 0)
+                .earliest()
+                .unwrap()
+                .timestamp();
+            let now = DateTime::<Utc>::from_timestamp(end, 0).unwrap();
+            let ym = YearMonth { year, month };
+            let result =
+                build_monthly_export_in(ym, &[session(1, "dummy", start, end)], &[], now, timezone)
+                    .unwrap();
+            let row = &result.rows[0];
+            assert_eq!(row.total_seconds, expected_hours * 3600);
+            assert_eq!(row.daily_seconds.iter().sum::<i64>(), end - start);
+            if year == 2011 {
+                assert_eq!(&row.daily_seconds[28..31], &[3600, 0, 3600]);
+            }
+        }
     }
 }

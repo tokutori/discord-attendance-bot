@@ -1,14 +1,16 @@
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 
 use crate::{
     attendance::{AttendanceSession, DailyAttendance, MonthlyAttendance, YearMonth},
-    time::{display_timezone, month_bounds},
+    time::{day_boundary_in, display_timezone, month_bounds_in},
 };
 
 #[cfg(test)]
 use crate::time::DISPLAY_TIMEZONE;
+#[cfg(test)]
+use chrono::TimeZone;
 
 /// Returns the non-negative overlap between a session and a half-open range.
 ///
@@ -39,8 +41,16 @@ pub fn aggregate_monthly(
     year_month: YearMonth,
     now: DateTime<Utc>,
 ) -> anyhow::Result<MonthlyAttendance> {
-    let timezone = display_timezone();
-    let (month_start, month_end) = month_bounds(year_month)?;
+    aggregate_monthly_in(sessions, year_month, now, display_timezone())
+}
+
+fn aggregate_monthly_in(
+    sessions: &[AttendanceSession],
+    year_month: YearMonth,
+    now: DateTime<Utc>,
+    timezone: chrono_tz::Tz,
+) -> anyhow::Result<MonthlyAttendance> {
+    let (month_start, month_end) = month_bounds_in(year_month, timezone)?;
     let mut daily: BTreeMap<chrono::NaiveDate, i64> = BTreeMap::new();
     let mut total: i64 = 0;
     let mut count = 0;
@@ -66,14 +76,8 @@ pub fn aggregate_monthly(
             let next_date = date
                 .checked_add_signed(Duration::days(1))
                 .ok_or_else(|| anyhow::anyhow!("invalid next calendar date"))?;
-            let next_midnight_local = next_date
-                .and_hms_opt(0, 0, 0)
-                .ok_or_else(|| anyhow::anyhow!("invalid local midnight"))?;
-            let next_midnight = timezone
-                .from_local_datetime(&next_midnight_local)
-                .single()
-                .ok_or_else(|| anyhow::anyhow!("invalid local midnight"))?
-                .timestamp();
+            let next_midnight = day_boundary_in(timezone, next_date)?;
+            anyhow::ensure!(next_midnight > cursor, "calendar boundary did not advance");
             let segment_end = clipped_end.min(next_midnight);
             let segment_seconds = segment_end.saturating_sub(cursor);
             let daily_total = daily.entry(date).or_default();
@@ -216,5 +220,47 @@ mod tests {
         assert_eq!(result.elapsed_calendar_days, 0);
         assert_eq!(result.average_per_day(), 0);
         assert_eq!(result.average_per_week(), 0);
+    }
+    #[test]
+    fn totals_survive_midnight_transitions_and_skipped_dates() {
+        for (timezone, year, month, day, start_hour, end_day, end_hour, expected_hours) in [
+            (chrono_tz::America::Havana, 2026, 3, 7, 12, 7, 13, 1),
+            (chrono_tz::America::Havana, 2026, 3, 7, 23, 9, 1, 25),
+            (chrono_tz::America::Havana, 2026, 11, 1, 0, 2, 0, 25),
+            (chrono_tz::Pacific::Apia, 2011, 12, 29, 23, 31, 1, 2),
+        ] {
+            let start = timezone
+                .with_ymd_and_hms(year, month, day, start_hour, 0, 0)
+                .earliest()
+                .unwrap()
+                .timestamp();
+            let end = timezone
+                .with_ymd_and_hms(year, month, end_day, end_hour, 0, 0)
+                .earliest()
+                .unwrap()
+                .timestamp();
+            let now = DateTime::<Utc>::from_timestamp(end, 0).unwrap();
+            let ym = YearMonth { year, month };
+            let result = aggregate_monthly_in(&[session(start, end)], ym, now, timezone).unwrap();
+            assert_eq!(result.total_seconds, expected_hours * 3600);
+            assert_eq!(
+                result
+                    .daily_totals
+                    .iter()
+                    .map(|day| day.total_seconds)
+                    .sum::<i64>(),
+                end - start
+            );
+            if year == 2011 {
+                assert_eq!(
+                    result
+                        .daily_totals
+                        .iter()
+                        .map(|day| (day.date.day(), day.total_seconds))
+                        .collect::<Vec<_>>(),
+                    vec![(29, 3600), (31, 3600)]
+                );
+            }
+        }
     }
 }
