@@ -1,4 +1,4 @@
-use std::{sync::OnceLock, time::Duration};
+use std::{future::Future, sync::OnceLock, time::Duration};
 
 use anyhow::Context as _;
 use attendance_query::ReadDatabase;
@@ -68,24 +68,75 @@ pub async fn refresh_status(
         .channel_id
         .context("status channel is not configured")?;
     let _guard = status_refresh_lock().lock().await;
-    let sessions = load_active_sessions(pool, guild_id).await?;
-    let activity = activity_status(&sessions, Utc::now().timestamp(), status.mode.shows_names());
-    ctx.set_activity(Some(serenity::ActivityData::watching(activity)));
-
-    let topic = status_topic(&sessions, Utc::now().timestamp(), status.mode.shows_names());
-    tracing::info!(
+    // Always use HTTP: a cached channel cannot establish the current destination.
+    refresh_after_channel_check(
         guild_id,
         channel_id,
-        "sending attendance status topic update"
-    );
-    tokio::time::timeout(
-        Duration::from_secs(10),
-        serenity::ChannelId::new(channel_id).edit(ctx, serenity::EditChannel::new().topic(topic)),
+        async {
+            Ok(ctx
+                .http
+                .get_channel(serenity::ChannelId::new(channel_id))
+                .await?)
+        },
+        || async {
+            let sessions = load_active_sessions(pool, guild_id).await?;
+            let activity =
+                activity_status(&sessions, Utc::now().timestamp(), status.mode.shows_names());
+            ctx.set_activity(Some(serenity::ActivityData::watching(activity)));
+
+            let topic = status_topic(&sessions, Utc::now().timestamp(), status.mode.shows_names());
+            tracing::info!(
+                guild_id,
+                channel_id,
+                "sending attendance status topic update"
+            );
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                serenity::ChannelId::new(channel_id)
+                    .edit(ctx, serenity::EditChannel::new().topic(topic)),
+            )
+            .await
+            .context("timed out updating attendance status channel topic")??;
+            tracing::info!(guild_id, channel_id, "sent attendance status topic update");
+            Ok(sessions.len())
+        },
     )
     .await
-    .context("timed out updating attendance status channel topic")??;
-    tracing::info!(guild_id, channel_id, "sent attendance status topic update");
-    Ok(sessions.len())
+}
+
+// Keep every DB read and publication inside the checked continuation. This also
+// lets tests prove that failed destination lookup never reaches those effects.
+async fn refresh_after_channel_check<L, R, RF>(
+    guild_id: i64,
+    channel_id: u64,
+    lookup: L,
+    refresh: R,
+) -> anyhow::Result<usize>
+where
+    L: Future<Output = anyhow::Result<serenity::Channel>>,
+    R: FnOnce() -> RF,
+    RF: Future<Output = anyhow::Result<usize>>,
+{
+    let channel = tokio::time::timeout(Duration::from_secs(10), lookup)
+        .await
+        .context("timed out verifying attendance status channel")??;
+    let serenity::Channel::Guild(channel) = channel else {
+        anyhow::bail!("attendance status channel must be a Guild channel");
+    };
+    anyhow::ensure!(
+        guild_id > 0 && channel.guild_id.get() == guild_id as u64 && channel.id.get() == channel_id,
+        "attendance status channel does not belong to the configured Guild"
+    );
+    anyhow::ensure!(
+        matches!(
+            channel.kind,
+            serenity::ChannelType::Text
+                | serenity::ChannelType::News
+                | serenity::ChannelType::Forum
+        ),
+        "attendance status channel must support a topic (text, announcement or forum)"
+    );
+    refresh().await
 }
 
 pub fn spawn_periodic_refresh(
@@ -126,4 +177,113 @@ pub fn spawn_periodic_refresh(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    fn channel(guild: u64, id: u64, kind: serenity::ChannelType) -> serenity::Channel {
+        let mut channel = serenity::GuildChannel::default();
+        channel.guild_id = serenity::GuildId::new(guild);
+        channel.id = serenity::ChannelId::new(id);
+        channel.kind = kind;
+        serenity::Channel::Guild(channel)
+    }
+
+    #[tokio::test]
+    async fn verifies_each_refresh_before_any_data_access_or_publication() {
+        let events = Mutex::new(Vec::new());
+        for kind in [
+            serenity::ChannelType::Text,
+            serenity::ChannelType::News,
+            serenity::ChannelType::Forum,
+        ] {
+            let count = refresh_after_channel_check(
+                10,
+                20,
+                async {
+                    events.lock().unwrap().push("lookup");
+                    Ok(channel(10, 20, kind))
+                },
+                || async {
+                    events.lock().unwrap().extend(["load", "activity", "topic"]);
+                    Ok(3)
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(count, 3);
+        }
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["lookup", "load", "activity", "topic"].repeat(3)
+        );
+        // A later lookup returning another Guild must not reuse earlier approval.
+        let before = events.lock().unwrap().len();
+        assert!(
+            refresh_after_channel_check(
+                10,
+                20,
+                async { Ok(channel(11, 20, serenity::ChannelType::Text)) },
+                || async {
+                    events.lock().unwrap().push("unexpected effect");
+                    Ok(0)
+                }
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(events.lock().unwrap().len(), before);
+    }
+
+    #[tokio::test]
+    async fn rejects_wrong_guild_id_kind_private_channel_and_lookup_errors() {
+        let mut invalid = vec![
+            channel(11, 20, serenity::ChannelType::Text),
+            channel(10, 21, serenity::ChannelType::Text),
+            serenity::Channel::Private(serenity::PrivateChannel::default()),
+        ];
+        for kind in [
+            serenity::ChannelType::Voice,
+            serenity::ChannelType::Category,
+            serenity::ChannelType::Stage,
+            serenity::ChannelType::PublicThread,
+            serenity::ChannelType::PrivateThread,
+            serenity::ChannelType::NewsThread,
+            serenity::ChannelType::Directory,
+            serenity::ChannelType::Unknown(99),
+        ] {
+            invalid.push(channel(10, 20, kind));
+        }
+        for value in invalid {
+            assert!(
+                refresh_after_channel_check(10, 20, async { Ok(value) }, || async {
+                    panic!("must not read DB or publish activity/topic")
+                })
+                .await
+                .is_err()
+            );
+        }
+        for reason in ["not found", "forbidden", "transport failure"] {
+            assert!(
+                refresh_after_channel_check(10, 20, async { anyhow::bail!(reason) }, || async {
+                    panic!("must not read DB or publish activity/topic")
+                })
+                .await
+                .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn lookup_timeout_prevents_all_refresh_effects() {
+        let error = refresh_after_channel_check(10, 20, std::future::pending(), || async {
+            panic!("must not read DB or publish activity/topic")
+        })
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("timed out verifying"));
+    }
 }
