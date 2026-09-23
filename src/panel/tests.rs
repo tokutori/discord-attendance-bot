@@ -581,14 +581,10 @@ async fn discord_envelope_rejects_wrong_sources_and_component_types() {
 
 #[test]
 fn panel_permissions_and_two_explicit_buttons_are_fixed() {
-    use poise::serenity_prelude::Permissions;
     let command = super::panel();
     assert!(command.guild_only);
-    assert!(
-        command
-            .required_permissions
-            .contains(Permissions::MANAGE_GUILD)
-    );
+    assert!(command.required_permissions.is_empty());
+    assert!(command.required_bot_permissions.is_empty());
     for enabled in [false, true] {
         let value = serde_json::to_value(super::discord::components(enabled)).unwrap();
         let buttons = value[0]["components"].as_array().unwrap();
@@ -599,4 +595,113 @@ fn panel_permissions_and_two_explicit_buttons_are_fixed() {
             assert_eq!(button["disabled"], !enabled);
         }
     }
+}
+
+#[test]
+fn management_payload_permissions_fail_closed() {
+    use poise::serenity_prelude::Permissions as P;
+    let bot = P::VIEW_CHANNEL | P::SEND_MESSAGES | P::EMBED_LINKS;
+    let check = super::discord::check_permissions;
+    assert!(check(Some(P::MANAGE_GUILD), Some(bot)).is_ok());
+    assert!(check(Some(P::ADMINISTRATOR), Some(P::ADMINISTRATOR)).is_ok());
+    for user in [None, Some(P::empty()), Some(P::SEND_MESSAGES)] {
+        assert!(check(user, Some(bot)).is_err());
+    }
+    assert!(check(Some(P::MANAGE_GUILD), None).is_err());
+    for bit in [P::VIEW_CHANNEL, P::SEND_MESSAGES, P::EMBED_LINKS] {
+        assert!(check(Some(P::MANAGE_GUILD), Some(bot - bit)).is_err());
+    }
+}
+
+struct FakeResponse {
+    ack: super::Acknowledgement,
+    fail_reply: bool,
+    events: Vec<String>,
+}
+impl super::Response for FakeResponse {
+    async fn acknowledge(&mut self) -> super::Acknowledgement {
+        self.events.push("ack".into());
+        self.ack
+    }
+    async fn reply(&mut self, content: &str) -> bool {
+        self.events.push(content.to_owned());
+        !self.fail_reply
+    }
+}
+fn response(ack: super::Acknowledgement, fail_reply: bool) -> FakeResponse {
+    FakeResponse {
+        ack,
+        fail_reply,
+        events: vec![],
+    }
+}
+
+#[tokio::test]
+async fn failed_or_lost_ack_never_starts_recording() {
+    let pool = memory().await;
+    let mut http = response(super::Acknowledgement::Failed, false);
+    super::process(&pool, Ok(request(1, 10, Action::Join, 100)), 1, &mut http).await;
+    assert_eq!(http.events, ["ack"]);
+    assert_eq!(count(&pool).await, 0);
+    assert!(
+        recover(&pool, &request(1, 10, Action::Join, 100))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    // If Discord received the ACK but its response was lost, redelivery yields
+    // AlreadyAcknowledged. Without a committed receipt it must not mutate.
+    http = response(super::Acknowledgement::AlreadyAcknowledged, false);
+    super::process(&pool, Ok(request(1, 10, Action::Join, 100)), 1, &mut http).await;
+    assert_eq!(count(&pool).await, 0);
+    assert!(http.events[1].contains("処理中"));
+}
+
+#[tokio::test]
+async fn lost_reply_keeps_commit_and_duplicate_ack_recovers_without_reapplying() {
+    let pool = memory().await;
+    let mut http = response(super::Acknowledgement::Accepted, true);
+    super::process(&pool, Ok(request(1, 10, Action::Join, 100)), 1, &mut http).await;
+    assert_eq!(http.events[0], "ack");
+    assert_eq!(count(&pool).await, 1);
+    assert!(
+        recover(&pool, &request(1, 10, Action::Join, 100))
+            .await
+            .unwrap()
+            .is_some()
+    );
+    attendance::end(&pool, 1, 10, 200, None, 200).await.unwrap();
+    http = response(super::Acknowledgement::AlreadyAcknowledged, false);
+    super::process(
+        &pool,
+        Ok(Request {
+            received_at: 250,
+            ..request(1, 10, Action::Join, 100)
+        }),
+        1,
+        &mut http,
+    )
+    .await;
+    assert!(http.events[1].contains("再適用していない"));
+    assert_eq!(count(&pool).await, 1);
+    assert!(
+        repository::open_session(&pool, 1, 10)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn handler_rejects_invalid_input_and_reports_receipt_persistence_failure() {
+    let pool = memory().await;
+    let mut http = response(super::Acknowledgement::Accepted, false);
+    super::process(&pool, Err(super::discord::InputError::Source), 1, &mut http).await;
+    assert_eq!(http.events[0], "ack");
+    assert_eq!(count(&pool).await, 0);
+    sqlx::query("CREATE TRIGGER dummy_failure BEFORE INSERT ON attendance_panel_receipts BEGIN SELECT RAISE(ABORT,'dummy'); END").execute(&pool).await.unwrap();
+    http.events.clear();
+    super::process(&pool, Ok(request(1, 10, Action::Join, 100)), 1, &mut http).await;
+    assert!(http.events[1].contains("記録結果を確認できなかった"));
+    assert_eq!(count(&pool).await, 0);
 }

@@ -34,12 +34,7 @@ fn attachment_size_limit(ctx: Context<'_>) -> usize {
 }
 
 /// 指定月の全メンバーの活動時間をCSV・PDFで出力する。
-#[poise::command(
-    slash_command,
-    guild_only,
-    required_permissions = "MANAGE_GUILD",
-    required_bot_permissions = "SEND_MESSAGES | EMBED_LINKS | ATTACH_FILES"
-)]
+#[poise::command(slash_command, guild_only)]
 pub async fn export(
     ctx: Context<'_>,
     #[description = "対象月（YYYY-MM）"] month: String,
@@ -53,6 +48,17 @@ pub async fn export(
 ) -> Result<(), Error> {
     let publish = matches!(mode.unwrap_or(ExportMode::Preview), ExportMode::Publish);
     ctx.defer_ephemeral().await?;
+    let poise::Context::Application(application) = ctx else {
+        anyhow::bail!("Slash Commandで実行してほしい");
+    };
+    check_permissions(
+        application
+            .interaction
+            .member
+            .as_ref()
+            .and_then(|m| m.permissions),
+        application.interaction.app_permissions,
+    )?;
     if publish && confirm_public != Some(true) {
         ctx.send(
             CreateReply::default()
@@ -173,12 +179,50 @@ pub async fn export(
     Ok(())
 }
 
+// Permissions are already computed by Discord for this interaction. Do not
+// invoke Poise's REST-backed required_permissions before the initial response.
+fn check_permissions(
+    user: Option<serenity::Permissions>,
+    bot: Option<serenity::Permissions>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        user.is_some_and(|p| p.contains(serenity::Permissions::MANAGE_GUILD)
+            || p.contains(serenity::Permissions::ADMINISTRATOR)),
+        "サーバー管理権限が必要である"
+    );
+    let required = serenity::Permissions::SEND_MESSAGES
+        | serenity::Permissions::EMBED_LINKS
+        | serenity::Permissions::ATTACH_FILES;
+    anyhow::ensure!(
+        bot.is_some_and(
+            |p| p.contains(required) || p.contains(serenity::Permissions::ADMINISTRATOR)
+        ),
+        "Botのチャンネル権限が不足している、または確認できない"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn export_metadata_requires_manager_and_attachment_permissions() {
+    fn export_payload_permissions_fail_closed() {
+        use poise::serenity_prelude::Permissions as P;
+        let bot = P::SEND_MESSAGES | P::EMBED_LINKS | P::ATTACH_FILES;
+        assert!(check_permissions(Some(P::MANAGE_GUILD), Some(bot)).is_ok());
+        assert!(check_permissions(Some(P::ADMINISTRATOR), Some(P::ADMINISTRATOR)).is_ok());
+        for user in [None, Some(P::empty()), Some(P::SEND_MESSAGES)] {
+            assert!(check_permissions(user, Some(bot)).is_err());
+        }
+        assert!(check_permissions(Some(P::MANAGE_GUILD), None).is_err());
+        for bit in [P::SEND_MESSAGES, P::EMBED_LINKS, P::ATTACH_FILES] {
+            assert!(check_permissions(Some(P::MANAGE_GUILD), Some(bot - bit)).is_err());
+        }
+    }
+
+    #[test]
+    fn export_metadata_does_not_require_rest_before_ack() {
         let command = crate::commands::attendanceview();
         assert!(
             command
@@ -191,21 +235,8 @@ mod tests {
             .iter()
             .find(|command| command.name == "export")
             .unwrap();
-        assert!(
-            export
-                .required_permissions
-                .contains(serenity::Permissions::MANAGE_GUILD)
-        );
-        assert!(
-            export
-                .required_bot_permissions
-                .contains(serenity::Permissions::ATTACH_FILES)
-        );
-        assert!(
-            export
-                .required_bot_permissions
-                .contains(serenity::Permissions::EMBED_LINKS)
-        );
+        assert!(export.required_permissions.is_empty());
+        assert!(export.required_bot_permissions.is_empty());
         let format = export
             .parameters
             .iter()
