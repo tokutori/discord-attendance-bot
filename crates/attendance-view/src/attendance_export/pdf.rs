@@ -21,7 +21,6 @@ pub(super) fn pdf_font_path() -> anyhow::Result<PathBuf> {
     }
     let candidates = [
         PathBuf::from(r"C:\Windows\Fonts\NotoSansJP-VF.ttf"),
-        PathBuf::from(r"C:\Windows\Fonts\SimsunExtG.ttf"),
         PathBuf::from("/usr/share/fonts/truetype/noto/NotoSansJP-Regular.ttf"),
         PathBuf::from("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
         PathBuf::from("/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf"),
@@ -316,6 +315,34 @@ pub fn to_pdf(export: &MonthlyExport, identity_mode: IdentityMode) -> anyhow::Re
         .map_err(|error| anyhow::anyhow!("PDFフォントを読み込めない: {error}"))?;
     let parsed_font = ParsedFont::from_bytes(&font_bytes, 0, &mut Vec::new())
         .ok_or_else(|| anyhow::anyhow!("PDFフォントを解析できない"))?;
+    render_pdf(export, identity_mode, parsed_font)
+}
+
+fn validate_text_glyphs(font: &ParsedFont, ops: &[Op]) -> anyhow::Result<()> {
+    for op in ops {
+        if let Op::ShowText { items } = op {
+            for item in items {
+                if let TextItem::Text(text) = item {
+                    for character in text.chars().filter(|c| !c.is_whitespace()) {
+                        anyhow::ensure!(
+                            font.lookup_glyph_index(character as u32)
+                                .is_some_and(|id| id != 0),
+                            "PDFフォントに必要な字形がない (U+{:04X})。対応する日本語フォントを指定してほしい。",
+                            character as u32
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn render_pdf(
+    export: &MonthlyExport,
+    identity_mode: IdentityMode,
+    parsed_font: ParsedFont,
+) -> anyhow::Result<Vec<u8>> {
     let title = format!(
         "活動時間集計 {}-{:02}",
         export.year_month.year, export.year_month.month
@@ -367,6 +394,9 @@ pub fn to_pdf(export: &MonthlyExport, identity_mode: IdentityMode) -> anyhow::Re
             );
         }
         add_pdf_table(&mut ops, export, rows, &font, 185.0, identity_mode);
+        // Check the actual rendered text, including headings, names and notes.
+        // Never report a successful attachment whose text becomes .notdef boxes.
+        validate_text_glyphs(&parsed_font, &ops)?;
         pages.push(PdfPage::new(Mm(297.0), Mm(210.0), ops));
     }
 
@@ -385,6 +415,54 @@ pub fn to_pdf(export: &MonthlyExport, identity_mode: IdentityMode) -> anyhow::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_font(text: &str) -> ParsedFont {
+        ParsedFont::with_glyph_data(
+            Vec::new(),
+            0,
+            None,
+            text.chars().map(|c| (c as u32, 1)).collect(),
+            Default::default(),
+            1000,
+            printpdf::FontMetrics {
+                ascent: 800,
+                descent: -200,
+            },
+        )
+    }
+
+    #[test]
+    fn checks_japanese_latin_and_notdef_glyphs() {
+        let text = "活動時間集計ユーザー情報山田太郎あいうえお 0123";
+        let ops = vec![Op::ShowText {
+            items: vec![TextItem::Text(text.into())],
+        }];
+        let mut font = test_font(text);
+        assert!(validate_text_glyphs(&font, &ops).is_ok());
+        font.set_codepoint_mapping('山' as u32, 0);
+        assert!(validate_text_glyphs(&font, &ops).is_err());
+        assert!(validate_text_glyphs(&test_font("0123"), &ops).is_err());
+    }
+
+    #[test]
+    fn production_render_rejects_unsupported_japanese_before_saving() {
+        let export = MonthlyExport {
+            year_month: crate::attendance::YearMonth {
+                year: 2026,
+                month: 8,
+            },
+            dates: vec![],
+            rows: vec![],
+            notices: vec![],
+        };
+        let error = render_pdf(
+            &export,
+            IdentityMode::WithDiscordName,
+            test_font("0123456789-"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("U+6D3B"));
+    }
 
     #[test]
     fn wraps_long_userconfig_identity_without_losing_generation_name_or_role() {
