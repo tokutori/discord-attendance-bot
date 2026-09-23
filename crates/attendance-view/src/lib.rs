@@ -7,6 +7,7 @@ pub mod commands;
 pub mod framework_error;
 pub mod presentation;
 pub struct Data {
+    pub guild_id: u64,
     pub database: attendance_query::ReadDatabase,
 }
 pub type Error = anyhow::Error;

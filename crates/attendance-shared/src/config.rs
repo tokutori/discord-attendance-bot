@@ -259,6 +259,15 @@ fn parse_database_synchronous(value: &str) -> anyhow::Result<DatabaseSynchronous
     }
 }
 
+/// Validate the configured single-Guild boundary before any data access.
+pub fn require_guild(expected: u64, actual: Option<u64>) -> anyhow::Result<i64> {
+    anyhow::ensure!(
+        expected != 0 && actual == Some(expected),
+        "設定されたサーバーで実行してほしい"
+    );
+    i64::try_from(expected).context("guild ID exceeds SQLite range")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,5 +393,13 @@ mod tests {
         }
         assert!(!is_in_memory_database("sqlite://attendance.db?mode=rwc").unwrap());
         assert!(is_in_memory_database("not-a-sqlite-url?unknown=bad").is_err());
+    }
+    #[test]
+    fn guild_boundary_rejects_foreign_missing_and_invalid_ids() {
+        assert_eq!(require_guild(10, Some(10)).unwrap(), 10);
+        assert!(require_guild(10, Some(20)).is_err());
+        assert!(require_guild(10, None).is_err());
+        assert!(require_guild(0, Some(0)).is_err());
+        assert!(require_guild(u64::MAX, Some(u64::MAX)).is_err());
     }
 }
