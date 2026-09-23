@@ -155,7 +155,7 @@ DBにはDiscord user ID、履歴上の表示名、活動時刻、任意の備考
 
 ## バックアップ
 
-`attendance-maintenance`はDiscord tokenを読み取らず、SQLiteの`VACUUM INTO`で稼働中DBの整合したスナップショットを作成します。作成後に`PRAGMA integrity_check`とmigration metadataを検査し、成功した場合だけ最終ファイル名へ変更します。既存ファイルは上書きしません。
+`attendance-maintenance`はDiscord tokenを読み取らず、SQLiteの`VACUUM INTO`で稼働中DBの整合したスナップショットを作成します。作成後に`PRAGMA integrity_check`・外部キー・migration台帳のversion/success/checksum・現行schema（テーブル、インデックス、trigger等）を検査します。検証済みの一時ファイルは出力先が存在しない場合だけ確定し、並行処理が先に作ったファイルも上書きしません。手動で変更されたschemaは検証を通過しません。
 
 ソース実行例:
 
