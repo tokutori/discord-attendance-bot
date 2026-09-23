@@ -37,7 +37,10 @@ fn status_text(
                 .trim()
                 .to_owned();
             let candidate = format!("{topic}\n({}) {name}", index + 1);
-            if candidate.chars().count() + 1 + updated.chars().count() <= max_chars {
+            // If more names remain, reserve the truncation marker as well as
+            // the timestamp. The final name needs no marker reservation.
+            let marker_chars = if index + 1 < sessions.len() { 2 } else { 0 };
+            if candidate.chars().count() + marker_chars + 1 + updated.chars().count() <= max_chars {
                 topic = candidate;
             } else {
                 topic.push_str("\n…");
@@ -126,5 +129,42 @@ mod tests {
         let topic = status_topic(&[session("秘密の名前")], 0, false);
         assert!(topic.contains("現在1名活動中"));
         assert!(!topic.contains("秘密の名前"));
+    }
+    #[test]
+    fn truncated_roster_reserves_space_for_ellipsis() {
+        let sessions = (0..30)
+            .map(|_| session(&"x".repeat(28)))
+            .collect::<Vec<_>>();
+        let topic = status_topic(&sessions, 0, true);
+        assert!(topic.contains('…'));
+        assert!(topic.chars().count() <= MAX_TOPIC_CHARS);
+    }
+
+    #[test]
+    fn final_name_can_fill_the_exact_limit() {
+        let overhead = status_topic(&[session("x")], 0, true).chars().count() - 1;
+        let exact = status_topic(&[session(&"x".repeat(MAX_TOPIC_CHARS - overhead))], 0, true);
+        assert_eq!(exact.chars().count(), MAX_TOPIC_CHARS);
+        assert!(!exact.contains('…'));
+        let over = status_topic(
+            &[session(&"x".repeat(MAX_TOPIC_CHARS - overhead + 1))],
+            0,
+            true,
+        );
+        assert!(over.chars().count() <= MAX_TOPIC_CHARS);
+        assert!(over.contains('…'));
+    }
+
+    #[test]
+    fn roster_boundaries_preserve_topic_and_activity_limits() {
+        for count in 1..=40 {
+            for width in 1..=32 {
+                let sessions = (0..count)
+                    .map(|_| session(&"名".repeat(width)))
+                    .collect::<Vec<_>>();
+                assert!(status_topic(&sessions, 0, true).chars().count() <= MAX_TOPIC_CHARS);
+                assert!(activity_status(&sessions, 0, true).chars().count() <= MAX_ACTIVITY_CHARS);
+            }
+        }
     }
 }
