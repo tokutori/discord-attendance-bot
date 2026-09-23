@@ -132,3 +132,63 @@ pub fn request(
         received_at: now,
     })
 }
+
+// Permissions are already computed by Discord for this interaction. Do not
+// invoke Poise's REST-backed required_permissions before the initial response.
+pub(super) fn check_permissions(
+    user: Option<serenity::Permissions>,
+    bot: Option<serenity::Permissions>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        user.is_some_and(|p| p.contains(serenity::Permissions::MANAGE_GUILD)
+            || p.contains(serenity::Permissions::ADMINISTRATOR)),
+        "サーバー管理権限が必要である"
+    );
+    let required = serenity::Permissions::VIEW_CHANNEL
+        | serenity::Permissions::SEND_MESSAGES
+        | serenity::Permissions::EMBED_LINKS;
+    anyhow::ensure!(
+        bot.is_some_and(
+            |p| p.contains(required) || p.contains(serenity::Permissions::ADMINISTRATOR)
+        ),
+        "Botのチャンネル権限が不足している、または確認できない"
+    );
+    Ok(())
+}
+
+pub(super) struct ResponseTransport<'a> {
+    pub ctx: &'a serenity::Context,
+    pub interaction: &'a serenity::ComponentInteraction,
+}
+
+impl super::Response for ResponseTransport<'_> {
+    async fn acknowledge(&mut self) -> super::Acknowledgement {
+        match self.interaction.defer_ephemeral(self.ctx).await {
+            Ok(()) => super::Acknowledgement::Accepted,
+            Err(serenity::Error::Http(serenity::HttpError::UnsuccessfulRequest(response)))
+                if response.error.code == 40060 =>
+            {
+                super::Acknowledgement::AlreadyAcknowledged
+            }
+            Err(_) => super::Acknowledgement::Failed,
+        }
+    }
+    async fn reply(&mut self, content: &str) -> bool {
+        let sent = self
+            .interaction
+            .edit_response(
+                self.ctx,
+                serenity::EditInteractionResponse::new()
+                    .embed(crate::presentation::response_embed("活動時間記録", content)),
+            )
+            .await
+            .is_ok();
+        if !sent {
+            tracing::warn!(
+                interaction_id = self.interaction.id.get(),
+                "panel response failed; committed recording retained"
+            );
+        }
+        sent
+    }
+}

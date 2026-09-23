@@ -6,12 +6,7 @@ use crate::{Context, Data, Error, presentation, repository};
 use poise::{CreateReply, serenity_prelude as serenity};
 
 /// 共用の活動記録パネルをこのチャンネルに設置・更新する。
-#[poise::command(
-    slash_command,
-    guild_only,
-    required_permissions = "MANAGE_GUILD",
-    required_bot_permissions = "VIEW_CHANNEL | SEND_MESSAGES | EMBED_LINKS"
-)]
+#[poise::command(slash_command, guild_only)]
 pub async fn panel(ctx: Context<'_>) -> Result<(), Error> {
     ctx.defer_ephemeral().await?;
     // Explicit boundary validation in addition to Poise's command metadata.
@@ -19,16 +14,17 @@ pub async fn panel(ctx: Context<'_>) -> Result<(), Error> {
         .guild_id()
         .filter(|g| g.get() == ctx.data().guild_id)
         .ok_or_else(|| anyhow::anyhow!("設定されたサーバーで実行してほしい"))?;
-    let member = ctx
-        .author_member()
-        .await
-        .ok_or_else(|| anyhow::anyhow!("管理権限を確認できない"))?;
-    anyhow::ensure!(
-        member
-            .permissions
-            .is_some_and(|p| p.contains(serenity::Permissions::MANAGE_GUILD)),
-        "サーバー管理権限が必要である"
-    );
+    let poise::Context::Application(application) = ctx else {
+        anyhow::bail!("Slash Commandで実行してほしい");
+    };
+    discord::check_permissions(
+        application
+            .interaction
+            .member
+            .as_ref()
+            .and_then(|m| m.permissions),
+        application.interaction.app_permissions,
+    )?;
     let channel = ctx
         .channel_id()
         .to_channel(ctx.serenity_context())
@@ -85,39 +81,79 @@ pub async fn handle(ctx: &serenity::Context, event: &serenity::FullEvent, data: 
         return;
     }
     let now = chrono::Utc::now().timestamp();
-    // Without an acknowledged private response, do not begin recording.
-    if interaction.defer_ephemeral(ctx).await.is_err() {
+    process(
+        &data.database,
+        discord::request(interaction, data, now),
+        interaction.id.get(),
+        &mut discord::ResponseTransport { ctx, interaction },
+    )
+    .await;
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Acknowledgement {
+    Accepted,
+    AlreadyAcknowledged,
+    Failed,
+}
+
+trait Response {
+    fn acknowledge(&mut self) -> impl std::future::Future<Output = Acknowledgement> + Send;
+    fn reply(&mut self, content: &str) -> impl std::future::Future<Output = bool> + Send;
+}
+
+async fn process(
+    database: &sqlx::SqlitePool,
+    input: Result<store::Request, discord::InputError>,
+    interaction_id: u64,
+    transport: &mut impl Response,
+) {
+    let acknowledgement = transport.acknowledge().await;
+    if acknowledgement == Acknowledgement::Failed {
         tracing::warn!(
-            interaction_id = interaction.id.get(),
+            interaction_id,
             "panel acknowledgement failed; recording not attempted"
         );
         return;
     }
-    let request = match discord::request(interaction, data, now) {
+    let request = match input {
         Ok(request) => request,
         Err(error) => {
-            reply(ctx, interaction, &error.to_string()).await;
+            transport.reply(&error.to_string()).await;
             return;
         }
     };
-    let receipt = match store::record(&data.database, &request).await {
+    // A duplicate ACK only recovers a receipt. If the original handler is still
+    // committing or its ACK response was lost, never create a new mutation.
+    let result = if acknowledgement == Acknowledgement::AlreadyAcknowledged {
+        match store::recover(database, &request).await {
+            Ok(Some(receipt)) => Ok(receipt),
+            _ => {
+                transport.reply("受付済みの操作である。処理中または結果を確認できないため、履歴を確認してほしい。記録変更は再適用していない。").await;
+                return;
+            }
+        }
+    } else {
+        store::record(database, &request).await
+    };
+    let receipt = match result {
         Ok(receipt) => receipt,
         Err(
             error @ (store::RecordingError::InvalidPanel
             | store::RecordingError::Expired
             | store::RecordingError::ReceiptMismatch),
         ) => {
-            reply(ctx, interaction, &error.to_string()).await;
+            transport.reply(&error.to_string()).await;
             return;
         }
-        Err(_) => match store::recover(&data.database, &request).await {
+        Err(_) => match store::recover(database, &request).await {
             Ok(Some(receipt)) => receipt,
             _ => {
                 tracing::error!(
-                    interaction_id = interaction.id.get(),
+                    interaction_id,
                     "panel recording result could not be confirmed"
                 );
-                reply(ctx, interaction, "記録結果を確認できなかった。履歴を確認し、同じ操作を繰り返す前に記録状態を確認してほしい。").await;
+                transport.reply("記録結果を確認できなかった。履歴を確認し、同じ操作を繰り返す前に記録状態を確認してほしい。").await;
                 return;
             }
         },
@@ -127,7 +163,7 @@ pub async fn handle(ctx: &serenity::Context, event: &serenity::FullEvent, data: 
         Err(_) => "記録処理は完了したが結果を表示できなかった。履歴を確認してほしい。".into(),
     };
     let notice = match repository::peek_auto_end_notice(
-        &data.database,
+        database,
         request.location.guild_id,
         request.user_id,
     )
@@ -135,10 +171,7 @@ pub async fn handle(ctx: &serenity::Context, event: &serenity::FullEvent, data: 
     {
         Ok(notice) => notice,
         Err(_) => {
-            tracing::warn!(
-                interaction_id = interaction.id.get(),
-                "panel notice lookup failed"
-            );
+            tracing::warn!(interaction_id, "panel notice lookup failed");
             None
         }
     };
@@ -148,46 +181,23 @@ pub async fn handle(ctx: &serenity::Context, event: &serenity::FullEvent, data: 
             presentation::auto_end_notice_text(notice)
         ));
     }
-    if reply(ctx, interaction, &content).await
+    if transport.reply(&content).await
         && let Some(notice) = notice
         && repository::acknowledge_auto_end_notice(
-            &data.database,
+            database,
             notice.event_id,
             request.location.guild_id,
             request.user_id,
-            now,
+            request.received_at,
         )
         .await
         .is_err()
     {
         tracing::warn!(
-            interaction_id = interaction.id.get(),
+            interaction_id,
             "panel response sent but notice acknowledgement failed"
         );
     }
-}
-
-async fn reply(
-    ctx: &serenity::Context,
-    interaction: &serenity::ComponentInteraction,
-    content: &str,
-) -> bool {
-    // Editing the deferred ephemeral response cannot mutate the shared panel.
-    let sent = interaction
-        .edit_response(
-            ctx,
-            serenity::EditInteractionResponse::new()
-                .embed(presentation::response_embed("活動時間記録", content)),
-        )
-        .await
-        .is_ok();
-    if !sent {
-        tracing::warn!(
-            interaction_id = interaction.id.get(),
-            "panel response failed; committed recording retained"
-        );
-    }
-    sent
 }
 
 fn render(receipt: &store::Receipt) -> Result<String, Error> {
