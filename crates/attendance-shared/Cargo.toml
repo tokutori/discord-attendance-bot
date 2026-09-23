@@ -9,7 +9,7 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
-chrono-tz.workspace = true
+jiff.workspace = true
 serde.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true

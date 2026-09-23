@@ -1,14 +1,18 @@
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 
 use chrono::{DateTime, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
-use chrono_tz::{Asia::Tokyo, Tz};
+mod calendar;
+mod zone;
+pub use calendar::MonthCalendar;
 use thiserror::Error;
+pub use zone::Tz;
 
 use crate::attendance::YearMonth;
 
-pub const DISPLAY_TIMEZONE: Tz = Tokyo;
+pub static DISPLAY_TIMEZONE: LazyLock<Tz> =
+    LazyLock::new(|| "Asia/Tokyo".parse().expect("bundled Tokyo timezone"));
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct TimePolicy {
     pub timezone: Tz,
     pub auto_end_time: Option<NaiveTime>,
@@ -17,7 +21,7 @@ pub struct TimePolicy {
 impl Default for TimePolicy {
     fn default() -> Self {
         Self {
-            timezone: DISPLAY_TIMEZONE,
+            timezone: DISPLAY_TIMEZONE.clone(),
             auto_end_time: NaiveTime::from_hms_opt(21, 0, 0),
         }
     }
@@ -32,7 +36,7 @@ pub fn install_time_policy(policy: TimePolicy) -> anyhow::Result<()> {
 }
 
 pub fn time_policy() -> TimePolicy {
-    TIME_POLICY.get().copied().unwrap_or_default()
+    TIME_POLICY.get().cloned().unwrap_or_default()
 }
 
 pub fn display_timezone() -> Tz {
@@ -91,7 +95,10 @@ pub fn parse_today_time(input: &str, now_utc: DateTime<Utc>) -> Result<i64, Pars
     let time =
         NaiveTime::parse_from_str(input, "%H:%M").map_err(|_| ParseTimeError::InvalidTime)?;
     let timezone = display_timezone();
-    let date = now_utc.with_timezone(&timezone).date_naive();
+    let date = timezone
+        .datetime(now_utc.timestamp())
+        .map_err(|_| ParseTimeError::AmbiguousOrInvalidLocalTime)?
+        .date_naive();
     local_to_timestamp(date.and_time(time))
 }
 
@@ -99,7 +106,9 @@ pub fn parse_most_recent_time(input: &str, now_utc: DateTime<Utc>) -> Result<i64
     let time =
         NaiveTime::parse_from_str(input, "%H:%M").map_err(|_| ParseTimeError::InvalidTime)?;
     let timezone = display_timezone();
-    let local_now = now_utc.with_timezone(&timezone);
+    let local_now = timezone
+        .datetime(now_utc.timestamp())
+        .map_err(|_| ParseTimeError::AmbiguousOrInvalidLocalTime)?;
     let mut date = local_now.date_naive();
     let today = local_to_timestamp(date.and_time(time))?;
     if today <= now_utc.timestamp() {
@@ -119,7 +128,9 @@ pub fn parse_full_datetime(input: &str) -> Result<i64, ParseTimeError> {
 
 pub fn format_datetime(timestamp: i64) -> String {
     let timezone = display_timezone();
-    DateTime::<Utc>::from_timestamp(timestamp, 0)
+    timezone
+        .datetime(timestamp)
+        .ok()
         .map(|dt| {
             dt.with_timezone(&timezone)
                 .format("%Y年%-m月%-d日 %H:%M")
@@ -131,9 +142,7 @@ pub fn format_datetime(timestamp: i64) -> String {
 /// Formats a persisted interval without panicking on an invalid timestamp.
 pub fn format_history_range(started_at: i64, ended_at: Option<i64>) -> String {
     let timezone = display_timezone();
-    let Some(start) =
-        DateTime::<Utc>::from_timestamp(started_at, 0).map(|value| value.with_timezone(&timezone))
-    else {
+    let Some(start) = timezone.datetime(started_at).ok() else {
         return "不正な時刻".into();
     };
     match ended_at {
@@ -142,9 +151,7 @@ pub fn format_history_range(started_at: i64, ended_at: Option<i64>) -> String {
             if end < started_at {
                 return "不正な時刻".into();
             }
-            let Some(end) =
-                DateTime::<Utc>::from_timestamp(end, 0).map(|value| value.with_timezone(&timezone))
-            else {
+            let Some(end) = timezone.datetime(end).ok() else {
                 return "不正な時刻".into();
             };
             if start.date_naive() == end.date_naive() {
@@ -238,43 +245,20 @@ pub fn day_boundary_in(timezone: Tz, date: NaiveDate) -> anyhow::Result<i64> {
     )
 }
 
-/// Returns the Unix timestamps of the local month start and following month start.
+/// Returns an SQL candidate envelope for the local month. Exact membership
+/// requires MonthCalendar::overlaps because a month can have disjoint intervals.
 pub fn month_bounds(ym: YearMonth) -> anyhow::Result<(i64, i64)> {
     month_bounds_in(ym, display_timezone())
 }
 
-/// Month boundaries in an explicit timezone, including offset transitions.
 pub fn month_bounds_in(ym: YearMonth, timezone: Tz) -> anyhow::Result<(i64, i64)> {
-    let start_date = NaiveDate::from_ymd_opt(ym.year, ym.month, 1)
-        .ok_or_else(|| anyhow::anyhow!("invalid year-month"))?;
-    let (next_year, next_month) = if ym.month == 12 {
-        (
-            ym.year
-                .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("invalid next year"))?,
-            1,
-        )
-    } else {
-        (ym.year, ym.month + 1)
-    };
-    let end_date = NaiveDate::from_ymd_opt(next_year, next_month, 1)
-        .ok_or_else(|| anyhow::anyhow!("invalid next month"))?;
-    Ok((
-        day_boundary_in(timezone, start_date)?,
-        day_boundary_in(timezone, end_date)?,
-    ))
+    Ok(MonthCalendar::new(ym, timezone)?.query_bounds())
 }
 
-/// Computes the next midnight in the display timezone.
+/// Returns the next strictly future change of local calendar date.
 pub fn next_midnight_timestamp(now: DateTime<Utc>) -> anyhow::Result<i64> {
-    let timezone = display_timezone();
-    let local_date = now.with_timezone(&timezone).date_naive();
-    let next_date = local_date
-        .succ_opt()
-        .ok_or_else(|| anyhow::anyhow!("could not calculate next local date"))?;
-    day_boundary_in(timezone, next_date)
+    calendar::next_date_boundary(display_timezone(), now.timestamp())
 }
-
 /// Computes the configured 21:00 automatic end for an older active period.
 ///
 /// # Examples
@@ -307,10 +291,8 @@ fn auto_end_timestamp_with_policy(
     let Some(cutoff_time) = policy.auto_end_time else {
         return Ok(None);
     };
-    let started = DateTime::<Utc>::from_timestamp(started_at, 0)
-        .ok_or_else(|| anyhow::anyhow!("invalid auto-end start timestamp"))?
-        .with_timezone(&policy.timezone);
-    let local_now = now.with_timezone(&policy.timezone);
+    let started = policy.timezone.datetime(started_at)?;
+    let local_now = policy.timezone.datetime(now.timestamp())?;
     if started.date_naive() >= local_now.date_naive() {
         return Ok(None);
     }
@@ -322,14 +304,15 @@ fn auto_end_timestamp_with_policy(
             .succ_opt()
             .ok_or_else(|| anyhow::anyhow!("invalid auto-end date"))?
     };
-    let mut cutoff = resolve_scheduled_local(policy.timezone, cutoff_date.and_time(cutoff_time))?;
+    let mut cutoff =
+        resolve_scheduled_local(policy.timezone.clone(), cutoff_date.and_time(cutoff_time))?;
     // During a repeated hour the earliest cutoff may already precede the
     // second occurrence of the start time. Never end before the active period.
     if cutoff <= started_at {
         let next_date = cutoff_date
             .succ_opt()
             .ok_or_else(|| anyhow::anyhow!("invalid next auto-end date"))?;
-        cutoff = resolve_scheduled_local(policy.timezone, next_date.and_time(cutoff_time))?;
+        cutoff = resolve_scheduled_local(policy.timezone.clone(), next_date.and_time(cutoff_time))?;
     }
     anyhow::ensure!(cutoff > started_at, "auto-end cutoff did not advance");
     Ok((cutoff <= now.timestamp()).then_some(cutoff))
@@ -362,7 +345,7 @@ mod tests {
 
     #[test]
     fn parses_future_clock_time_as_previous_day_for_end() {
-        let now = Tokyo
+        let now = DISPLAY_TIMEZONE
             .with_ymd_and_hms(2026, 8, 9, 0, 5, 0)
             .unwrap()
             .with_timezone(&Utc);
@@ -372,15 +355,15 @@ mod tests {
 
     #[test]
     fn calculates_previous_day_auto_end_at_21() {
-        let started = Tokyo
+        let started = DISPLAY_TIMEZONE
             .with_ymd_and_hms(2026, 8, 8, 18, 0, 0)
             .unwrap()
             .with_timezone(&Utc);
-        let after_midnight = Tokyo
+        let after_midnight = DISPLAY_TIMEZONE
             .with_ymd_and_hms(2026, 8, 9, 0, 0, 1)
             .unwrap()
             .with_timezone(&Utc);
-        let expected = Tokyo
+        let expected = DISPLAY_TIMEZONE
             .with_ymd_and_hms(2026, 8, 8, 21, 0, 0)
             .unwrap()
             .timestamp();
@@ -396,15 +379,15 @@ mod tests {
 
     #[test]
     fn start_after_21_auto_ends_at_next_21() {
-        let started = Tokyo
+        let started = DISPLAY_TIMEZONE
             .with_ymd_and_hms(2026, 8, 8, 21, 1, 0)
             .unwrap()
             .with_timezone(&Utc);
-        let before_cutoff = Tokyo
+        let before_cutoff = DISPLAY_TIMEZONE
             .with_ymd_and_hms(2026, 8, 9, 0, 0, 1)
             .unwrap()
             .with_timezone(&Utc);
-        let after_cutoff = Tokyo
+        let after_cutoff = DISPLAY_TIMEZONE
             .with_ymd_and_hms(2026, 8, 10, 0, 0, 1)
             .unwrap()
             .with_timezone(&Utc);
@@ -416,7 +399,7 @@ mod tests {
         assert_eq!(
             auto_end_timestamp(started.timestamp(), after_cutoff).unwrap(),
             Some(
-                Tokyo
+                DISPLAY_TIMEZONE
                     .with_ymd_and_hms(2026, 8, 9, 21, 0, 0)
                     .unwrap()
                     .timestamp()
@@ -426,11 +409,11 @@ mod tests {
 
     #[test]
     fn start_exactly_at_21_auto_ends_at_next_21() {
-        let started = Tokyo
+        let started = DISPLAY_TIMEZONE
             .with_ymd_and_hms(2026, 8, 8, 21, 0, 0)
             .unwrap()
             .with_timezone(&Utc);
-        let after_midnight = Tokyo
+        let after_midnight = DISPLAY_TIMEZONE
             .with_ymd_and_hms(2026, 8, 9, 0, 0, 1)
             .unwrap()
             .with_timezone(&Utc);
@@ -439,14 +422,14 @@ mod tests {
             auto_end_timestamp(started.timestamp(), after_midnight).unwrap(),
             None
         );
-        let after_next_cutoff = Tokyo
+        let after_next_cutoff = DISPLAY_TIMEZONE
             .with_ymd_and_hms(2026, 8, 10, 0, 0, 1)
             .unwrap()
             .with_timezone(&Utc);
         assert_eq!(
             auto_end_timestamp(started.timestamp(), after_next_cutoff).unwrap(),
             Some(
-                Tokyo
+                DISPLAY_TIMEZONE
                     .with_ymd_and_hms(2026, 8, 9, 21, 0, 0)
                     .unwrap()
                     .timestamp()
@@ -457,13 +440,13 @@ mod tests {
     #[test]
     fn applies_custom_timezone_and_cutoff_without_global_state() {
         let policy = TimePolicy {
-            timezone: chrono_tz::UTC,
+            timezone: "UTC".parse().unwrap(),
             auto_end_time: NaiveTime::from_hms_opt(17, 30, 0),
         };
         let started = Utc.with_ymd_and_hms(2026, 8, 8, 10, 0, 0).unwrap();
         let next_day = Utc.with_ymd_and_hms(2026, 8, 9, 0, 0, 1).unwrap();
         assert_eq!(
-            auto_end_timestamp_with_policy(started.timestamp(), next_day, policy).unwrap(),
+            auto_end_timestamp_with_policy(started.timestamp(), next_day, policy.clone()).unwrap(),
             Some(
                 Utc.with_ymd_and_hms(2026, 8, 8, 17, 30, 0)
                     .unwrap()
@@ -485,7 +468,7 @@ mod tests {
     }
     #[test]
     fn automatic_cutoffs_resolve_gaps_and_overlaps_without_hiding_errors() {
-        let timezone = chrono_tz::America::New_York;
+        let timezone = "America/New_York".parse::<Tz>().unwrap();
         for (month, day, hour, minute, expected_hour) in [(3, 7, 2, 30, 3), (10, 31, 1, 30, 1)] {
             let started = timezone
                 .with_ymd_and_hms(2026, month, day, 23, 0, 0)
@@ -501,18 +484,19 @@ mod tests {
                 .unwrap()
                 .timestamp();
             let policy = TimePolicy {
-                timezone,
+                timezone: timezone.clone(),
                 auto_end_time: NaiveTime::from_hms_opt(hour, minute, 0),
             };
             for days in [2, 3, 30] {
                 let now = started.with_timezone(&Utc) + chrono::Duration::days(days);
                 assert_eq!(
-                    auto_end_timestamp_with_policy(started.timestamp(), now, policy).unwrap(),
+                    auto_end_timestamp_with_policy(started.timestamp(), now, policy.clone())
+                        .unwrap(),
                     Some(expected)
                 );
             }
             assert!(
-                local_to_timestamp_in(timezone, date.and_hms_opt(hour, minute, 0).unwrap())
+                local_to_timestamp_in(timezone.clone(), date.and_hms_opt(hour, minute, 0).unwrap())
                     .is_err()
             );
         }
@@ -521,15 +505,15 @@ mod tests {
 
     #[test]
     fn calendar_boundaries_handle_short_long_and_missing_dates() {
-        let havana = chrono_tz::America::Havana;
+        let havana = "America/Havana".parse::<crate::time::Tz>().unwrap();
         for (month, day, hours) in [(3, 8, 23), (11, 1, 25)] {
             let date = NaiveDate::from_ymd_opt(2026, month, day).unwrap();
-            let start = day_boundary_in(havana, date).unwrap();
-            let end = day_boundary_in(havana, date.succ_opt().unwrap()).unwrap();
+            let start = day_boundary_in(havana.clone(), date).unwrap();
+            let end = day_boundary_in(havana.clone(), date.succ_opt().unwrap()).unwrap();
             assert_eq!(end - start, hours * 3600);
             if day == 1 {
                 assert_eq!(
-                    month_bounds_in(YearMonth { year: 2026, month }, havana)
+                    month_bounds_in(YearMonth { year: 2026, month }, havana.clone())
                         .unwrap()
                         .0,
                     start
@@ -538,19 +522,23 @@ mod tests {
         }
         let skipped = NaiveDate::from_ymd_opt(2011, 12, 30).unwrap();
         assert_eq!(
-            day_boundary_in(chrono_tz::Pacific::Apia, skipped).unwrap(),
-            day_boundary_in(chrono_tz::Pacific::Apia, skipped.succ_opt().unwrap()).unwrap()
+            day_boundary_in("Pacific/Apia".parse::<crate::time::Tz>().unwrap(), skipped).unwrap(),
+            day_boundary_in(
+                "Pacific/Apia".parse::<crate::time::Tz>().unwrap(),
+                skipped.succ_opt().unwrap()
+            )
+            .unwrap()
         );
     }
     #[test]
     fn repeated_hour_start_uses_the_next_future_cutoff() {
-        let timezone = chrono_tz::America::New_York;
+        let timezone = "America/New_York".parse::<Tz>().unwrap();
         let started = timezone
             .with_ymd_and_hms(2026, 11, 1, 1, 15, 0)
             .latest()
             .unwrap();
         let policy = TimePolicy {
-            timezone,
+            timezone: timezone.clone(),
             auto_end_time: NaiveTime::from_hms_opt(1, 30, 0),
         };
         let expected = timezone.with_ymd_and_hms(2026, 11, 2, 1, 30, 0).unwrap();
@@ -558,7 +546,7 @@ mod tests {
             auto_end_timestamp_with_policy(
                 started.timestamp(),
                 expected.with_timezone(&Utc),
-                policy
+                policy.clone()
             )
             .unwrap(),
             Some(expected.timestamp())

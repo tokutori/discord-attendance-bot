@@ -11,7 +11,6 @@ attendance-shared.workspace = true
 attendance-query.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
-chrono-tz.workspace = true
 dotenvy.workspace = true
 poise.workspace = true
 serenity.workspace = true
@@ -20,3 +19,6 @@ sqlx.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

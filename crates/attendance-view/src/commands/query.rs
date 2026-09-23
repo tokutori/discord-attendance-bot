@@ -125,7 +125,7 @@ pub async fn month(
         Some(value) => time::parse_year_month(&value)?,
         None => {
             let timezone = time::display_timezone();
-            let local_now = now.with_timezone(&timezone);
+            let local_now = timezone.datetime(now.timestamp())?;
             attendance::YearMonth {
                 year: local_now.year(),
                 month: local_now.month(),

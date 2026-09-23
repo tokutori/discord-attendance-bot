@@ -10,7 +10,7 @@ async fn repository_applies_missing_hour_cutoff_once() {
         timezone: "America/New_York".parse().unwrap(),
         auto_end_time: NaiveTime::from_hms_opt(2, 30, 0),
     };
-    let timezone = policy.timezone;
+    let timezone = policy.timezone.clone();
     install_time_policy(policy).unwrap();
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
