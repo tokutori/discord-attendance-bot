@@ -38,6 +38,22 @@ pub fn ensure_safe_sqlite_version(version: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Verify SQLite's actual main database has a persistent backing file.
+/// Run before migrations/recording, even when URL validation already passed.
+pub async fn require_persistent_database(pool: &SqlitePool) -> anyhow::Result<()> {
+    let databases: Vec<(i64, String, String)> = sqlx::query_as("PRAGMA database_list")
+        .fetch_all(pool)
+        .await
+        .context("failed to inspect SQLite backing file")?;
+    anyhow::ensure!(
+        databases
+            .iter()
+            .any(|(_, name, file)| name == "main" && !file.is_empty()),
+        "a persistent SQLite main database file is required"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

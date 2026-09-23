@@ -50,6 +50,9 @@ async fn main() -> anyhow::Result<()> {
         .connect_with(options)
         .await
         .context("failed to open SQLite database")?;
+    if mode != config::RunMode::Test {
+        database::require_persistent_database(&database).await?;
+    }
     let sqlite_version = database::validate_runtime_sqlite(&database).await?;
     info!(%sqlite_version, "validated SQLite runtime version");
     sqlx::migrate!("./migrations").run(&database).await?;
