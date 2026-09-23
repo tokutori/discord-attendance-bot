@@ -56,6 +56,7 @@ impl ReadDatabase {
             .connect_with(options)
             .await
             .context("failed to open readonly attendance DB; start core and migrations first")?;
+        attendance_shared::database::require_persistent_database(&pool).await?;
         attendance_shared::database::validate_runtime_sqlite(&pool).await?;
         validate_schema(&pool).await?;
         Ok(Self { pool })
