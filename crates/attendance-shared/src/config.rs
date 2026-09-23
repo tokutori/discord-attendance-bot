@@ -1,4 +1,5 @@
-use std::env;
+use sqlx::{ConnectOptions, sqlite::SqliteConnectOptions};
+use std::{env, str::FromStr};
 
 use anyhow::{Context as _, bail};
 use chrono::NaiveTime;
@@ -132,7 +133,7 @@ impl AppConfig {
             .with_context(|| format!("{guild_id_env} must be a Discord snowflake"))?;
         let database_url_env = mode.database_url_env();
         let database_url = required_env(database_url_env)?;
-        if mode != RunMode::Test && is_in_memory_database(&database_url) {
+        if mode != RunMode::Test && is_in_memory_database(&database_url)? {
             bail!("{database_url_env} must use a persistent SQLite file outside test mode");
         }
 
@@ -217,9 +218,17 @@ fn optional_env(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn is_in_memory_database(database_url: &str) -> bool {
-    matches!(database_url, "sqlite::memory:" | "sqlite://:memory:")
-        || database_url.contains("mode=memory")
+fn is_in_memory_database(database_url: &str) -> anyhow::Result<bool> {
+    let options =
+        SqliteConnectOptions::from_str(database_url).context("invalid SQLite database URL")?;
+    // SQLx 0.9 cannot serialize some filenames (including its generated
+    // memory URI and Windows drive paths). Only inspect flags on a clone.
+    let normalized = options.clone().filename("validation.db").to_url_lossy();
+    Ok(options.get_filename().as_os_str().is_empty()
+        || options.get_filename() == std::path::Path::new(":memory:")
+        || normalized
+            .query_pairs()
+            .any(|(key, value)| key == "mode" && value == "memory"))
 }
 
 fn parse_status_mode(value: Option<&str>, has_channel: bool) -> anyhow::Result<StatusMode> {
@@ -248,6 +257,15 @@ fn parse_database_synchronous(value: &str) -> anyhow::Result<DatabaseSynchronous
         "normal" => Ok(DatabaseSynchronous::Normal),
         _ => bail!("ATTENDANCE_SQLITE_SYNCHRONOUS must be full or normal"),
     }
+}
+
+/// Validate the configured single-Guild boundary before any data access.
+pub fn require_guild(expected: u64, actual: Option<u64>) -> anyhow::Result<i64> {
+    anyhow::ensure!(
+        expected != 0 && actual == Some(expected),
+        "設定されたサーバーで実行してほしい"
+    );
+    i64::try_from(expected).context("guild ID exceeds SQLite range")
 }
 
 #[cfg(test)]
@@ -349,8 +367,39 @@ mod tests {
 
     #[test]
     fn detects_in_memory_database_urls() {
-        assert!(is_in_memory_database("sqlite::memory:"));
-        assert!(is_in_memory_database("sqlite://file?mode=memory"));
-        assert!(!is_in_memory_database("sqlite://attendance.db"));
+        assert!(is_in_memory_database("sqlite::memory:").unwrap());
+        assert!(is_in_memory_database("sqlite://file?mode=memory").unwrap());
+        assert!(!is_in_memory_database("sqlite://attendance.db").unwrap());
+    }
+    #[test]
+    fn rejects_equivalent_memory_urls_in_persistent_modes() {
+        for mode in [RunMode::Standalone, RunMode::Release] {
+            for url in [
+                "sqlite::memory:?cache=shared",
+                "sqlite://:memory:?cache=private",
+                "sqlite://dummy?mode=mem%6fry",
+                "sqlite://dummy?%6dode=memory",
+                "sqlite://%3Amemory%3A",
+                "sqlite://",
+            ] {
+                let lookup = |key: &str| match key {
+                    "DISCORD_TOKEN" => Some("dummy".into()),
+                    "DISCORD_GUILD_ID" | "DISCORD_RELEASE_GUILD_ID" => Some("1".into()),
+                    "DATABASE_URL" | "DATABASE_URL_RELEASE" => Some(url.into()),
+                    _ => None,
+                };
+                assert!(AppConfig::load(mode, false, &lookup).is_err(), "{url}");
+            }
+        }
+        assert!(!is_in_memory_database("sqlite://attendance.db?mode=rwc").unwrap());
+        assert!(is_in_memory_database("not-a-sqlite-url?unknown=bad").is_err());
+    }
+    #[test]
+    fn guild_boundary_rejects_foreign_missing_and_invalid_ids() {
+        assert_eq!(require_guild(10, Some(10)).unwrap(), 10);
+        assert!(require_guild(10, Some(20)).is_err());
+        assert!(require_guild(10, None).is_err());
+        assert!(require_guild(0, Some(0)).is_err());
+        assert!(require_guild(u64::MAX, Some(u64::MAX)).is_err());
     }
 }

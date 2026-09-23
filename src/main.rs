@@ -50,6 +50,9 @@ async fn main() -> anyhow::Result<()> {
         .connect_with(options)
         .await
         .context("failed to open SQLite database")?;
+    if mode != config::RunMode::Test {
+        database::require_persistent_database(&database).await?;
+    }
     let sqlite_version = database::validate_runtime_sqlite(&database).await?;
     info!(%sqlite_version, "validated SQLite runtime version");
     sqlx::migrate!("./migrations").run(&database).await?;
@@ -62,6 +65,11 @@ async fn main() -> anyhow::Result<()> {
                 commands::exit(),
                 commands::attendanceexport(),
             ],
+            command_check: Some(|ctx| Box::pin(async move {
+                config::require_guild(ctx.data().guild_id, ctx.guild_id().map(|id| id.get()))?;
+                Ok(true)
+            })),
+            skip_checks_for_owners: false,
             on_error: |error| {
                 Box::pin(async move {
                     if let Err(error) = framework_error::handle(error).await {
