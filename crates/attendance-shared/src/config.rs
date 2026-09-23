@@ -1,9 +1,9 @@
 use sqlx::{ConnectOptions, sqlite::SqliteConnectOptions};
 use std::{env, str::FromStr};
 
+use crate::time::Tz;
 use anyhow::{Context as _, bail};
 use chrono::NaiveTime;
-use chrono_tz::Tz;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunMode {

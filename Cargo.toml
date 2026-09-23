@@ -22,7 +22,7 @@ resolver = "3"
 [workspace.dependencies]
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["clock"] }
-chrono-tz = "0.10"
+jiff = { version = "0.2.37", default-features = false, features = ["std", "tzdb-bundle-always"] }
 dotenvy = "0.15"
 poise = { version = "0.6.2", default-features = false, features = ["cache", "chrono", "handle_panics"] }
 # Poiseの既定rustls backendではなく、Serenityへ安全なTLS backendを明示的に供給する。

@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 
 use crate::{
     attendance::{AttendanceSession, DailyAttendance, MonthlyAttendance, YearMonth},
-    time::{day_boundary_in, display_timezone, month_bounds_in},
+    time::{MonthCalendar, display_timezone},
 };
 
 #[cfg(test)]
@@ -48,9 +48,9 @@ fn aggregate_monthly_in(
     sessions: &[AttendanceSession],
     year_month: YearMonth,
     now: DateTime<Utc>,
-    timezone: chrono_tz::Tz,
+    timezone: crate::time::Tz,
 ) -> anyhow::Result<MonthlyAttendance> {
-    let (month_start, month_end) = month_bounds_in(year_month, timezone)?;
+    let calendar = MonthCalendar::new(year_month, timezone.clone())?;
     let mut daily: BTreeMap<chrono::NaiveDate, i64> = BTreeMap::new();
     let mut total: i64 = 0;
     let mut count = 0;
@@ -59,33 +59,15 @@ fn aggregate_monthly_in(
         let Some(ended_at) = session.ended_at else {
             continue;
         };
-        let clipped_start = session.started_at.max(month_start);
-        let clipped_end = ended_at.min(month_end);
-        if clipped_end <= clipped_start {
-            continue;
-        }
-        count += 1;
-        total = total.saturating_add(clipped_end.saturating_sub(clipped_start));
-
-        let mut cursor = clipped_start;
-        while cursor < clipped_end {
-            let cursor_dt = DateTime::<Utc>::from_timestamp(cursor, 0)
-                .ok_or_else(|| anyhow::anyhow!("invalid session timestamp"))?
-                .with_timezone(&timezone);
-            let date = cursor_dt.date_naive();
-            let next_date = date
-                .checked_add_signed(Duration::days(1))
-                .ok_or_else(|| anyhow::anyhow!("invalid next calendar date"))?;
-            let next_midnight = day_boundary_in(timezone, next_date)?;
-            anyhow::ensure!(next_midnight > cursor, "calendar boundary did not advance");
-            let segment_end = clipped_end.min(next_midnight);
-            let segment_seconds = segment_end.saturating_sub(cursor);
+        let mut included = false;
+        for (date, seconds) in calendar.overlaps(session.started_at, ended_at) {
+            included = true;
+            total = total.saturating_add(seconds);
             let daily_total = daily.entry(date).or_default();
-            *daily_total = daily_total.saturating_add(segment_seconds);
-            cursor = segment_end;
+            *daily_total = daily_total.saturating_add(seconds);
         }
+        count += usize::from(included);
     }
-
     let first_date = NaiveDate::from_ymd_opt(year_month.year, year_month.month, 1)
         .ok_or_else(|| anyhow::anyhow!("invalid aggregation month"))?;
     let next_date = if year_month.month == 12 {
@@ -98,7 +80,7 @@ fn aggregate_monthly_in(
         NaiveDate::from_ymd_opt(year_month.year, year_month.month + 1, 1)
     }
     .ok_or_else(|| anyhow::anyhow!("invalid next aggregation month"))?;
-    let local_today = now.with_timezone(&timezone).date_naive();
+    let local_today = timezone.datetime(now.timestamp())?.date_naive();
     let elapsed_calendar_days = if local_today < first_date {
         0
     } else if local_today >= next_date {
@@ -154,7 +136,7 @@ mod tests {
             year: 2026,
             month: 8,
         };
-        let tz = DISPLAY_TIMEZONE;
+        let tz = DISPLAY_TIMEZONE.clone();
         let start = tz
             .with_ymd_and_hms(2026, 8, 6, 22, 0, 0)
             .single()
@@ -224,10 +206,46 @@ mod tests {
     #[test]
     fn totals_survive_midnight_transitions_and_skipped_dates() {
         for (timezone, year, month, day, start_hour, end_day, end_hour, expected_hours) in [
-            (chrono_tz::America::Havana, 2026, 3, 7, 12, 7, 13, 1),
-            (chrono_tz::America::Havana, 2026, 3, 7, 23, 9, 1, 25),
-            (chrono_tz::America::Havana, 2026, 11, 1, 0, 2, 0, 25),
-            (chrono_tz::Pacific::Apia, 2011, 12, 29, 23, 31, 1, 2),
+            (
+                "America/Havana".parse::<crate::time::Tz>().unwrap(),
+                2026,
+                3,
+                7,
+                12,
+                7,
+                13,
+                1,
+            ),
+            (
+                "America/Havana".parse::<crate::time::Tz>().unwrap(),
+                2026,
+                3,
+                7,
+                23,
+                9,
+                1,
+                25,
+            ),
+            (
+                "America/Havana".parse::<crate::time::Tz>().unwrap(),
+                2026,
+                11,
+                1,
+                0,
+                2,
+                0,
+                25,
+            ),
+            (
+                "Pacific/Apia".parse::<crate::time::Tz>().unwrap(),
+                2011,
+                12,
+                29,
+                23,
+                31,
+                1,
+                2,
+            ),
         ] {
             let start = timezone
                 .with_ymd_and_hms(year, month, day, start_hour, 0, 0)
