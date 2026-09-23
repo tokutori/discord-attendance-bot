@@ -139,6 +139,10 @@ cargo run --locked --release -p discord-attendance-bot --bin discord-attendance-
 
 `ATTENDANCE_STATUS_MODE=count`は人数だけを表示し、`names`はDiscord表示名もTopicとActivityへ表示します。個人情報を最小化する場合は`count`または`disabled`を選んでください。
 
+Topicの更新先には、担当Guild内のテキスト・アナウンス・フォーラムチャンネルを指定してください。各更新の前にHTTPでチャンネルの所属Guildと種類を確認します。別Guild・非対応種類・照会失敗の場合、その回の名簿取得、Topic更新、新しいActivityの公開を中止します。過去に公開したTopic・Activityは自動消去しません。
+
+ActivityはBotの共有Presenceであり、担当GuildやTopicの閲覧権限に限定されません。同じBotが別Guildに参加している場合、そのGuildの利用者にも活動人数・`names`での表示名が見える場合があります。名前の公開範囲を担当Guildに限定する運用では`names`を使用しないでください。Topicの宛先検証はActivityの公開範囲を制限する機能ではありません。
+
 ## 個人情報と削除
 
 DBにはDiscord user ID、履歴上の表示名、活動時刻、任意の備考、任意の本名・役割・代・名前の読みを保存します。運用者はDBとバックアップへのアクセスを制限し、利用者へ保存目的と保持期間を説明してください。
