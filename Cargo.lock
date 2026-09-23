@@ -161,6 +161,7 @@ dependencies = [
  "attendance-query",
  "attendance-shared",
  "chrono",
+ "chrono-tz",
  "dotenvy",
  "poise",
  "printpdf",

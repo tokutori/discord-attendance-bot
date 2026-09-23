@@ -41,7 +41,7 @@
 - `/attendanceexport help`
 - `/attendanceview help`
 
-`at`は`HH:MM`、`target`は`YYYY-MM`、編集日時は`YYYY-MM-DD HH:MM`形式です。入力と表示には`ATTENDANCE_TIMEZONE`を使用し、DBにはUTC Unix timestampを保存します。
+`at`は`HH:MM`、`target`は`YYYY-MM`、編集日時は`YYYY-MM-DD HH:MM`形式です。入力と表示には`ATTENDANCE_TIMEZONE`を使用し、DBにはUTC Unix timestampを保存します。夏時間などの日付境界の扱いは[日時境界の規則](docs/time-policy.md)を参照してください。
 
 パネルの操作・再設置・重複排除・処理済み情報の保持方針は [常設パネル](docs/recording-panel.md) を参照してください。
 

@@ -11,6 +11,7 @@ attendance-shared.workspace = true
 attendance-query.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
+chrono-tz.workspace = true
 dotenvy.workspace = true
 poise.workspace = true
 serenity.workspace = true

@@ -186,8 +186,65 @@ pub fn format_duration(seconds: i64) -> String {
     }
 }
 
+/// Resolves automatic calendar boundaries: earliest occurrence for overlaps,
+/// first valid local second after a gap. Manual input remains strict.
+fn resolve_scheduled_local(timezone: Tz, value: NaiveDateTime) -> anyhow::Result<i64> {
+    if let Some(resolved) = timezone.from_local_datetime(&value).earliest() {
+        return Ok(resolved.timestamp());
+    }
+    // IANA date-line changes can skip a whole date. Bound the search so an
+    // unresolvable date produces an error instead of blocking the scheduler.
+    for minute in 1..=48 * 60 {
+        let candidate = value
+            .checked_add_signed(chrono::Duration::minutes(minute))
+            .ok_or_else(|| anyhow::anyhow!("calendar boundary overflow"))?;
+        if timezone
+            .from_local_datetime(&candidate)
+            .earliest()
+            .is_some()
+        {
+            let mut low = (minute - 1) * 60;
+            let mut high = minute * 60;
+            while high - low > 1 {
+                let middle = (low + high) / 2;
+                let probe = value
+                    .checked_add_signed(chrono::Duration::seconds(middle))
+                    .ok_or_else(|| anyhow::anyhow!("calendar boundary overflow"))?;
+                if timezone.from_local_datetime(&probe).earliest().is_some() {
+                    high = middle;
+                } else {
+                    low = middle;
+                }
+            }
+            let boundary = value
+                .checked_add_signed(chrono::Duration::seconds(high))
+                .ok_or_else(|| anyhow::anyhow!("calendar boundary overflow"))?;
+            return timezone
+                .from_local_datetime(&boundary)
+                .earliest()
+                .map(|resolved| resolved.timestamp())
+                .ok_or_else(|| anyhow::anyhow!("unresolvable calendar boundary"));
+        }
+    }
+    anyhow::bail!("no valid local time within 48 hours of {value} in {timezone}")
+}
+
+/// Start of a local date, using the automatic calendar-boundary policy.
+pub fn day_boundary_in(timezone: Tz, date: NaiveDate) -> anyhow::Result<i64> {
+    resolve_scheduled_local(
+        timezone,
+        date.and_hms_opt(0, 0, 0)
+            .ok_or_else(|| anyhow::anyhow!("invalid midnight"))?,
+    )
+}
+
 /// Returns the Unix timestamps of the local month start and following month start.
 pub fn month_bounds(ym: YearMonth) -> anyhow::Result<(i64, i64)> {
+    month_bounds_in(ym, display_timezone())
+}
+
+/// Month boundaries in an explicit timezone, including offset transitions.
+pub fn month_bounds_in(ym: YearMonth, timezone: Tz) -> anyhow::Result<(i64, i64)> {
     let start_date = NaiveDate::from_ymd_opt(ym.year, ym.month, 1)
         .ok_or_else(|| anyhow::anyhow!("invalid year-month"))?;
     let (next_year, next_month) = if ym.month == 12 {
@@ -203,16 +260,8 @@ pub fn month_bounds(ym: YearMonth) -> anyhow::Result<(i64, i64)> {
     let end_date = NaiveDate::from_ymd_opt(next_year, next_month, 1)
         .ok_or_else(|| anyhow::anyhow!("invalid next month"))?;
     Ok((
-        local_to_timestamp(
-            start_date
-                .and_hms_opt(0, 0, 0)
-                .ok_or_else(|| anyhow::anyhow!("invalid month start"))?,
-        )?,
-        local_to_timestamp(
-            end_date
-                .and_hms_opt(0, 0, 0)
-                .ok_or_else(|| anyhow::anyhow!("invalid month end"))?,
-        )?,
+        day_boundary_in(timezone, start_date)?,
+        day_boundary_in(timezone, end_date)?,
     ))
 }
 
@@ -223,10 +272,7 @@ pub fn next_midnight_timestamp(now: DateTime<Utc>) -> anyhow::Result<i64> {
     let next_date = local_date
         .succ_opt()
         .ok_or_else(|| anyhow::anyhow!("could not calculate next local date"))?;
-    let next_midnight = next_date
-        .and_hms_opt(0, 0, 0)
-        .ok_or_else(|| anyhow::anyhow!("invalid next midnight"))?;
-    local_to_timestamp(next_midnight).map_err(Into::into)
+    day_boundary_in(timezone, next_date)
 }
 
 /// Computes the configured 21:00 automatic end for an older active period.
@@ -247,9 +293,9 @@ pub fn next_midnight_timestamp(now: DateTime<Utc>) -> anyhow::Result<i64> {
 ///     .with_ymd_and_hms(2026, 8, 8, 15, 0, 1)
 ///     .single()
 ///     .expect("fixed test date");
-/// assert_eq!(auto_end_timestamp(started, after_midnight), Some(started + 3 * 3600));
+/// assert_eq!(auto_end_timestamp(started, after_midnight).unwrap(), Some(started + 3 * 3600));
 /// ```
-pub fn auto_end_timestamp(started_at: i64, now: DateTime<Utc>) -> Option<i64> {
+pub fn auto_end_timestamp(started_at: i64, now: DateTime<Utc>) -> anyhow::Result<Option<i64>> {
     auto_end_timestamp_with_policy(started_at, now, time_policy())
 }
 
@@ -257,20 +303,36 @@ fn auto_end_timestamp_with_policy(
     started_at: i64,
     now: DateTime<Utc>,
     policy: TimePolicy,
-) -> Option<i64> {
-    let cutoff_time = policy.auto_end_time?;
-    let started = DateTime::<Utc>::from_timestamp(started_at, 0)?.with_timezone(&policy.timezone);
+) -> anyhow::Result<Option<i64>> {
+    let Some(cutoff_time) = policy.auto_end_time else {
+        return Ok(None);
+    };
+    let started = DateTime::<Utc>::from_timestamp(started_at, 0)
+        .ok_or_else(|| anyhow::anyhow!("invalid auto-end start timestamp"))?
+        .with_timezone(&policy.timezone);
     let local_now = now.with_timezone(&policy.timezone);
     if started.date_naive() >= local_now.date_naive() {
-        return None;
+        return Ok(None);
     }
     let cutoff_date = if started.time() < cutoff_time {
         started.date_naive()
     } else {
-        started.date_naive().succ_opt()?
+        started
+            .date_naive()
+            .succ_opt()
+            .ok_or_else(|| anyhow::anyhow!("invalid auto-end date"))?
     };
-    let cutoff = local_to_timestamp_in(policy.timezone, cutoff_date.and_time(cutoff_time)).ok()?;
-    (cutoff <= now.timestamp()).then_some(cutoff)
+    let mut cutoff = resolve_scheduled_local(policy.timezone, cutoff_date.and_time(cutoff_time))?;
+    // During a repeated hour the earliest cutoff may already precede the
+    // second occurrence of the start time. Never end before the active period.
+    if cutoff <= started_at {
+        let next_date = cutoff_date
+            .succ_opt()
+            .ok_or_else(|| anyhow::anyhow!("invalid next auto-end date"))?;
+        cutoff = resolve_scheduled_local(policy.timezone, next_date.and_time(cutoff_time))?;
+    }
+    anyhow::ensure!(cutoff > started_at, "auto-end cutoff did not advance");
+    Ok((cutoff <= now.timestamp()).then_some(cutoff))
 }
 
 #[cfg(test)]
@@ -323,10 +385,13 @@ mod tests {
             .unwrap()
             .timestamp();
         assert_eq!(
-            auto_end_timestamp(started.timestamp(), after_midnight),
+            auto_end_timestamp(started.timestamp(), after_midnight).unwrap(),
             Some(expected)
         );
-        assert_eq!(auto_end_timestamp(started.timestamp(), started), None);
+        assert_eq!(
+            auto_end_timestamp(started.timestamp(), started).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -344,9 +409,12 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
 
-        assert_eq!(auto_end_timestamp(started.timestamp(), before_cutoff), None);
         assert_eq!(
-            auto_end_timestamp(started.timestamp(), after_cutoff),
+            auto_end_timestamp(started.timestamp(), before_cutoff).unwrap(),
+            None
+        );
+        assert_eq!(
+            auto_end_timestamp(started.timestamp(), after_cutoff).unwrap(),
             Some(
                 Tokyo
                     .with_ymd_and_hms(2026, 8, 9, 21, 0, 0)
@@ -368,7 +436,7 @@ mod tests {
             .with_timezone(&Utc);
 
         assert_eq!(
-            auto_end_timestamp(started.timestamp(), after_midnight),
+            auto_end_timestamp(started.timestamp(), after_midnight).unwrap(),
             None
         );
         let after_next_cutoff = Tokyo
@@ -376,7 +444,7 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
         assert_eq!(
-            auto_end_timestamp(started.timestamp(), after_next_cutoff),
+            auto_end_timestamp(started.timestamp(), after_next_cutoff).unwrap(),
             Some(
                 Tokyo
                     .with_ymd_and_hms(2026, 8, 9, 21, 0, 0)
@@ -395,7 +463,7 @@ mod tests {
         let started = Utc.with_ymd_and_hms(2026, 8, 8, 10, 0, 0).unwrap();
         let next_day = Utc.with_ymd_and_hms(2026, 8, 9, 0, 0, 1).unwrap();
         assert_eq!(
-            auto_end_timestamp_with_policy(started.timestamp(), next_day, policy),
+            auto_end_timestamp_with_policy(started.timestamp(), next_day, policy).unwrap(),
             Some(
                 Utc.with_ymd_and_hms(2026, 8, 8, 17, 30, 0)
                     .unwrap()
@@ -410,7 +478,94 @@ mod tests {
                     auto_end_time: None,
                     ..policy
                 }
-            ),
+            )
+            .unwrap(),
+            None
+        );
+    }
+    #[test]
+    fn automatic_cutoffs_resolve_gaps_and_overlaps_without_hiding_errors() {
+        let timezone = chrono_tz::America::New_York;
+        for (month, day, hour, minute, expected_hour) in [(3, 7, 2, 30, 3), (10, 31, 1, 30, 1)] {
+            let started = timezone
+                .with_ymd_and_hms(2026, month, day, 23, 0, 0)
+                .unwrap();
+            let date = started.date_naive().succ_opt().unwrap();
+            let expected = timezone
+                .from_local_datetime(
+                    &date
+                        .and_hms_opt(expected_hour, if month == 3 { 0 } else { minute }, 0)
+                        .unwrap(),
+                )
+                .earliest()
+                .unwrap()
+                .timestamp();
+            let policy = TimePolicy {
+                timezone,
+                auto_end_time: NaiveTime::from_hms_opt(hour, minute, 0),
+            };
+            for days in [2, 3, 30] {
+                let now = started.with_timezone(&Utc) + chrono::Duration::days(days);
+                assert_eq!(
+                    auto_end_timestamp_with_policy(started.timestamp(), now, policy).unwrap(),
+                    Some(expected)
+                );
+            }
+            assert!(
+                local_to_timestamp_in(timezone, date.and_hms_opt(hour, minute, 0).unwrap())
+                    .is_err()
+            );
+        }
+        assert!(auto_end_timestamp(i64::MAX, Utc::now()).is_err());
+    }
+
+    #[test]
+    fn calendar_boundaries_handle_short_long_and_missing_dates() {
+        let havana = chrono_tz::America::Havana;
+        for (month, day, hours) in [(3, 8, 23), (11, 1, 25)] {
+            let date = NaiveDate::from_ymd_opt(2026, month, day).unwrap();
+            let start = day_boundary_in(havana, date).unwrap();
+            let end = day_boundary_in(havana, date.succ_opt().unwrap()).unwrap();
+            assert_eq!(end - start, hours * 3600);
+            if day == 1 {
+                assert_eq!(
+                    month_bounds_in(YearMonth { year: 2026, month }, havana)
+                        .unwrap()
+                        .0,
+                    start
+                );
+            }
+        }
+        let skipped = NaiveDate::from_ymd_opt(2011, 12, 30).unwrap();
+        assert_eq!(
+            day_boundary_in(chrono_tz::Pacific::Apia, skipped).unwrap(),
+            day_boundary_in(chrono_tz::Pacific::Apia, skipped.succ_opt().unwrap()).unwrap()
+        );
+    }
+    #[test]
+    fn repeated_hour_start_uses_the_next_future_cutoff() {
+        let timezone = chrono_tz::America::New_York;
+        let started = timezone
+            .with_ymd_and_hms(2026, 11, 1, 1, 15, 0)
+            .latest()
+            .unwrap();
+        let policy = TimePolicy {
+            timezone,
+            auto_end_time: NaiveTime::from_hms_opt(1, 30, 0),
+        };
+        let expected = timezone.with_ymd_and_hms(2026, 11, 2, 1, 30, 0).unwrap();
+        assert_eq!(
+            auto_end_timestamp_with_policy(
+                started.timestamp(),
+                expected.with_timezone(&Utc),
+                policy
+            )
+            .unwrap(),
+            Some(expected.timestamp())
+        );
+        let before = expected.with_timezone(&Utc) - chrono::Duration::seconds(1);
+        assert_eq!(
+            auto_end_timestamp_with_policy(started.timestamp(), before, policy).unwrap(),
             None
         );
     }
