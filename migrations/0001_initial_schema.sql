@@ -190,3 +190,36 @@ CREATE TABLE attendance_user_profiles (
 
 CREATE INDEX attendance_user_profiles_export_order
 ON attendance_user_profiles (guild_id, generation, real_name, user_id);
+
+CREATE TABLE attendance_panels (
+    guild_id INTEGER PRIMARY KEY,
+    channel_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    application_id INTEGER NOT NULL
+);
+
+-- No session FK: deleting a session must never enable replay of an old click.
+-- User erasure clears ownership and result, retaining an anonymous ID tombstone.
+CREATE TABLE attendance_panel_receipts (
+    interaction_id INTEGER PRIMARY KEY,
+    guild_id INTEGER,
+    user_id INTEGER,
+    channel_id INTEGER,
+    message_id INTEGER,
+    application_id INTEGER,
+    action TEXT,
+    received_at INTEGER NOT NULL,
+    outcome_json TEXT,
+    CHECK (
+        (guild_id IS NULL AND user_id IS NULL AND channel_id IS NULL
+         AND message_id IS NULL AND application_id IS NULL AND action IS NULL
+         AND outcome_json IS NULL)
+        OR
+        (guild_id IS NOT NULL AND user_id IS NOT NULL AND channel_id IS NOT NULL
+         AND message_id IS NOT NULL AND application_id IS NOT NULL AND action IS NOT NULL
+         AND action IN ('attendance:v1:join', 'attendance:v1:exit')
+         AND outcome_json IS NOT NULL)
+    )
+);
+CREATE INDEX attendance_panel_receipts_owner ON attendance_panel_receipts(guild_id, user_id);
+CREATE INDEX attendance_panel_receipts_expiry ON attendance_panel_receipts(received_at);

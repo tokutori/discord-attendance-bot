@@ -589,6 +589,8 @@ dependencies = [
  "chrono",
  "dotenvy",
  "poise",
+ "serde",
+ "serde_json",
  "serenity",
  "sqlx",
  "tempfile",

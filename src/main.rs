@@ -69,6 +69,10 @@ async fn main() -> anyhow::Result<()> {
                     }
                 })
             },
+            event_handler: |ctx, event, _, data| Box::pin(async move {
+                discord_attendance_bot::panel::handle(ctx, event, data).await;
+                Ok(())
+            }),
             ..Default::default()
         })
         .setup(move |ctx, ready, framework| {
@@ -105,7 +109,10 @@ async fn main() -> anyhow::Result<()> {
                         guild_database_id,
                     );
                 }
-                Ok(Data { database })
+                Ok(Data {
+                    database, guild_id, application_id: ready.user.id.get(),
+                    panel_management: tokio::sync::Mutex::new(()),
+                })
             })
         })
         .build();

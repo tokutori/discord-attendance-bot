@@ -4,6 +4,7 @@ pub mod attendance;
 pub mod commands;
 pub mod framework_error;
 pub mod maintenance;
+pub mod panel;
 pub mod presentation;
 pub mod repository;
 
@@ -15,6 +16,9 @@ pub mod wal_anchor;
 
 pub struct Data {
     pub database: SqlitePool,
+    pub guild_id: u64,
+    pub application_id: u64,
+    pub panel_management: tokio::sync::Mutex<()>,
 }
 
 pub type Error = anyhow::Error;

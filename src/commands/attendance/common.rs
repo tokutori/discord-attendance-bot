@@ -1,7 +1,7 @@
 use chrono::Utc;
 use poise::CreateReply;
 
-use crate::{Context, Error, presentation, repository, time::format_datetime};
+use crate::{Context, Error, presentation, repository};
 
 pub(super) fn ids(ctx: Context<'_>) -> Result<(i64, i64), Error> {
     let guild = ctx
@@ -27,20 +27,7 @@ pub(super) async fn peek_auto_end_notice(
     else {
         return Ok(None);
     };
-    let message = if notice.corrected_at.is_some() {
-        format!(
-            "前回の終了忘れにより、記録 #{} は {} に自動終了として扱われていた。今回の入力で自動終了を取り消し、ユーザー入力を正として扱った。",
-            notice.session_id,
-            format_datetime(notice.automatic_ended_at)
-        )
-    } else {
-        format!(
-            "前回の終了忘れにより、記録 #{} は {} に自動終了として扱った。実際の終了時刻が異なる場合は `/attendance edit record:{}` で修正してほしい。",
-            notice.session_id,
-            format_datetime(notice.automatic_ended_at),
-            notice.session_id
-        )
-    };
+    let message = presentation::auto_end_notice_text(&notice);
     Ok(Some(PendingAutoEndNotice {
         event_id: notice.event_id,
         message,

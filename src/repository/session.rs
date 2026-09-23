@@ -48,11 +48,34 @@ pub async fn insert_session(
     now: i64,
 ) -> Result<i64, super::SessionMutationError> {
     let mut tx = begin_immediate(pool).await?;
-    if has_session_overlap(&mut tx, guild_id, user_id, -1, started_at, None).await? {
+    let id = insert_session_in_tx(
+        &mut tx,
+        guild_id,
+        user_id,
+        display_name,
+        started_at,
+        note,
+        now,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(id)
+}
+
+pub(crate) async fn insert_session_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    guild_id: i64,
+    user_id: i64,
+    display_name: &str,
+    started_at: i64,
+    note: Option<&str>,
+    now: i64,
+) -> Result<i64, super::SessionMutationError> {
+    if has_session_overlap(tx, guild_id, user_id, -1, started_at, None).await? {
         return Err(super::SessionMutationError::Overlapping);
     }
     let result = sqlx::query("INSERT INTO attendance_sessions (guild_id,user_id,display_name,started_at,ended_at,open_since,note,created_at,updated_at) VALUES (?,?,?,?,NULL,?,?,?,?)")
-        .bind(guild_id).bind(user_id).bind(display_name).bind(started_at).bind(started_at).bind(note).bind(now).bind(now).execute(&mut *tx).await
+        .bind(guild_id).bind(user_id).bind(display_name).bind(started_at).bind(started_at).bind(note).bind(now).bind(now).execute(&mut **tx).await
         ?;
     let id = result.last_insert_rowid();
     let after = SnapshotRow {
@@ -63,7 +86,7 @@ pub async fn insert_session(
         deleted_at: None,
     };
     insert_change(
-        &mut tx,
+        tx,
         ChangeInput {
             guild_id,
             user_id,
@@ -75,7 +98,6 @@ pub async fn insert_session(
         },
     )
     .await?;
-    tx.commit().await?;
     Ok(id)
 }
 
@@ -154,6 +176,20 @@ pub async fn end_or_correct_session(
     now: i64,
 ) -> Result<EndSessionResult, super::SessionMutationError> {
     let mut tx = begin_immediate(pool).await?;
+    let outcome =
+        end_or_correct_session_in_tx(&mut tx, guild_id, user_id, ended_at, note, now).await?;
+    tx.commit().await?;
+    Ok(outcome)
+}
+
+pub(crate) async fn end_or_correct_session_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    guild_id: i64,
+    user_id: i64,
+    ended_at: i64,
+    note: Option<&str>,
+    now: i64,
+) -> Result<EndSessionResult, super::SessionMutationError> {
     if let Some(existing) = sqlx::query_as::<_, AttendanceSession>(
         "SELECT * FROM attendance_sessions
          WHERE guild_id = ? AND user_id = ?
@@ -161,14 +197,14 @@ pub async fn end_or_correct_session(
     )
     .bind(guild_id)
     .bind(user_id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?
     {
         if ended_at < existing.started_at {
             return Ok(EndSessionResult::EndBeforeStart);
         }
         if has_session_overlap(
-            &mut tx,
+            tx,
             guild_id,
             user_id,
             existing.id,
@@ -198,13 +234,13 @@ pub async fn end_or_correct_session(
         .bind(existing.id)
         .bind(guild_id)
         .bind(user_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         if result.rows_affected() != 1 {
             return Ok(EndSessionResult::AlreadyInactive(None));
         }
         insert_change(
-            &mut tx,
+            tx,
             ChangeInput {
                 guild_id,
                 user_id,
@@ -216,7 +252,6 @@ pub async fn end_or_correct_session(
             },
         )
         .await?;
-        tx.commit().await?;
         return Ok(EndSessionResult::Ended(AttendanceSession {
             ended_at: Some(ended_at),
             open_since: None,
@@ -227,10 +262,8 @@ pub async fn end_or_correct_session(
     }
 
     if let Some(corrected) =
-        correct_auto_ended_session_in_tx(&mut tx, None, guild_id, user_id, ended_at, note, now)
-            .await?
+        correct_auto_ended_session_in_tx(tx, None, guild_id, user_id, ended_at, note, now).await?
     {
-        tx.commit().await?;
         return Ok(EndSessionResult::AutoEndedCorrected {
             session: corrected.session,
             automatic_ended_at: corrected.automatic_ended_at,
@@ -244,9 +277,8 @@ pub async fn end_or_correct_session(
     )
     .bind(guild_id)
     .bind(user_id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?;
-    tx.commit().await?;
     Ok(EndSessionResult::AlreadyInactive(latest))
 }
 

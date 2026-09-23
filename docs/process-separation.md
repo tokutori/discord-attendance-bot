@@ -4,7 +4,7 @@
 
 記録系は既存の `discord-attendance-bot`、表示系は新しい `attendance-view` とする。
 同一ホストの同一 SQLite DB を、別プロセス・別 Discord Application から利用する。
-既存の記録コマンドと DB schema は変更しない。表示側の交換に IPC サーバーや記録プロセスの再起動は不要。
+記録コマンドを記録側が所有する。DB schema は記録側が定義する。表示側の交換に IPC サーバーや記録プロセスの再起動は不要。
 
 ```text
 discord-attendance-bot (記録用 Application)
@@ -60,7 +60,7 @@ Discord の bulk overwrite は Application ごとの登録一覧を置換する�
 - 読取は結果をメモリへ取得して接続を返してから表示・PDF 生成を行う。生成中に read transaction を保持しない。
 - 起動時に SQLx migration 台帳が `version=1, success=true` の1行のみであることと、必要なテーブル・列を検査する。
   未作成・未移行・非対応の DB は表示側だけ起動失敗し、migration は実行しない。
-- 将来 schema を変更するときは新 migration を追加し、query の対応 version とテストも更新する。
+- 試作中は初期 migration に統合し、query の必須テーブル・列の検査とテストも更新する。旧テストDBの互換性は保証しない。データを維持する運用の開始後は migration を連番で追加する。
   schema 更新時は view を停止してから core を更新し、対応する view を起動する。
   起動済み view に対する schema の自動再交渉は行わない。
 
@@ -82,21 +82,20 @@ view が先に起動して失敗しても core へは影響せず、Compose の 
 DB はローカルディスクに置く。バックアップは従来どおり記録側の `attendance-maintenance` と `VACUUM INTO` を使う。
 復元・DB ファイル交換時には **両プロセス**を停止する。稼働中の DB 本体だけをコピーしない。
 
-## 既存運用からの移行
+## 新規環境の起動
 
-1. 従来の手順で検証済みバックアップを作成する。既存 DB に schema 変更はない。
+1. 新規のテストDBを用意する。記録用 Discord Application を作成し、Guild へ追加する。
 2. 表示用 Discord Application を新規作成し、同じ Guild へ追加する。
    表示側には View Channel / Send Messages / Embed Links / Attach Files を付与する。
    Topic を使う場合だけ対象チャンネルの Manage Channels も付与する。
 3. ルートの `.env.example` を唯一の見本とし、Compose用の `.env` に記録用・表示用の項目を設定する。
-   既存の `.env` を上書きせず、不足する表示側専用項目を運用者が追加する。
+   設定は運用者が行う。
    Composeは共通のGuild・timezone・auto-end policyを両者へ渡し、トークンなどの専用項目をサービス別に限定する。
    `env_file` でファイル全体を渡さず、`.env` 自体もコンテナへマウントしない。Compose用の `.env.view` は不要。
-4. 記録用イメージを更新し `docker compose up -d --no-deps bot` で初回の切替を行う。
-   この初回導入では記録プロセスの再起動が必要。再登録により旧表示 subcommand は記録 Bot から消える。
+4. 記録用イメージをビルドし `docker compose up -d --no-deps bot` で起動する。初期 migration と WAL の初期化を完了させる。
 5. `docker compose --profile view build view`、続いて
    `docker compose --profile view up -d --no-deps view` で表示側を起動する。
-6. 利用者へ `/attendanceview` への変更と表示用 Bot を案内する。
+6. 利用者へ `/attendanceview` と表示用 Bot を案内する。
    `/join`・`/exit` を含む記録操作が view 停止中も利用できることをテスト Guild で確認する。
 
 以後、表示側だけの更新は次の手順で行う。bot service は再作成しない。

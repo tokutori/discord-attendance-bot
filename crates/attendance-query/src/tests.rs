@@ -110,7 +110,7 @@ async fn missing_unmigrated_or_incompatible_database_is_rejected_without_migrati
         .run(&writer)
         .await
         .unwrap();
-    sqlx::query("UPDATE _sqlx_migrations SET version=2")
+    sqlx::query("UPDATE _sqlx_migrations SET version=99 WHERE version=1")
         .execute(&writer)
         .await
         .unwrap();
@@ -123,4 +123,20 @@ async fn missing_unmigrated_or_incompatible_database_is_rejected_without_migrati
             .contains("unsupported attendance schema")
     );
     writer.close().await;
+}
+
+#[tokio::test]
+async fn initial_schema_requires_panel_tables_and_successful_ledger() {
+    for statement in [
+        "DROP TABLE attendance_panels",
+        "DROP TABLE attendance_panel_receipts",
+        "UPDATE _sqlx_migrations SET success=false WHERE version=1",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dummy.db");
+        let writer = fixture(&path).await;
+        sqlx::query(statement).execute(&writer).await.unwrap();
+        assert!(ReadDatabase::open_file(&path).await.is_err(), "{statement}");
+        writer.close().await;
+    }
 }

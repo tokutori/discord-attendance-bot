@@ -2,7 +2,7 @@ use chrono::Utc;
 
 use crate::{
     Context, Error,
-    attendance::{self, ContinueOutcome, EndOutcome, StartOutcome},
+    attendance::{self, ContinueOutcome},
     time::{self, format_datetime, format_duration},
 };
 
@@ -23,9 +23,9 @@ async fn start_impl(
     at: Option<String>,
     note: Option<String>,
 ) -> Result<(), Error> {
+    let (now, started_at) = now_and_optional_time(at.as_deref())?;
     defer_ephemeral(ctx).await?;
     let (guild_id, user_id) = ids(ctx)?;
-    let (now, started_at) = now_and_optional_time(at.as_deref())?;
     let outcome = attendance::start(
         &ctx.data().database,
         guild_id,
@@ -36,29 +36,7 @@ async fn start_impl(
         now,
     )
     .await?;
-    let content = match outcome {
-        StartOutcome::Started(session) => format!(
-            "活動を開始した。\n開始時刻: {}\n記録ID: #{}",
-            format_datetime(session.started_at),
-            session.id
-        ),
-        StartOutcome::AlreadyActive(session) => {
-            let mut text = format!(
-                "すでに活動中である。\n\n開始時刻: {}\n経過時間: {}",
-                format_datetime(session.started_at),
-                format_duration(session.duration_seconds_at(now))
-            );
-            if let Some(note) = session
-                .note
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-            {
-                text.push_str(&format!("\n備考: {note}"));
-            }
-            text.push_str(&format!("\n記録ID: #{}", session.id));
-            text
-        }
-    };
+    let content = crate::presentation::start_outcome(&outcome, now);
     send_response(ctx, content).await
 }
 
@@ -87,16 +65,16 @@ pub async fn join(
 }
 
 async fn end_impl(ctx: Context<'_>, at: Option<String>, note: Option<String>) -> Result<(), Error> {
+    let now_utc = Utc::now();
     defer_ephemeral(ctx).await?;
     let (guild_id, user_id) = ids(ctx)?;
-    let now_utc = Utc::now();
     let now = now_utc.timestamp();
     let ended_at = at
         .as_deref()
         .map(|value| time::parse_most_recent_time(value, now_utc))
         .transpose()?
         .unwrap_or(now);
-    let content = match attendance::end(
+    let outcome = attendance::end(
         &ctx.data().database,
         guild_id,
         user_id,
@@ -104,37 +82,8 @@ async fn end_impl(ctx: Context<'_>, at: Option<String>, note: Option<String>) ->
         note.as_deref(),
         now,
     )
-    .await?
-    {
-        EndOutcome::Ended(session) => format!(
-            "活動を終了した。\n開始時刻: {}\n終了時刻: {}\n活動時間: {}\n記録ID: #{}",
-            format_datetime(session.started_at),
-            format_datetime(session.completed_end()?),
-            format_duration(session.duration_seconds_at(now)),
-            session.id
-        ),
-        EndOutcome::AutoEndedCorrected {
-            session,
-            automatic_end,
-        } => format!(
-            "活動を終了した。\n自動終了（{}）を取り消し、入力された終了時刻を正として扱った。\n開始時刻: {}\n終了時刻: {}\n活動時間: {}\n記録ID: #{}",
-            format_datetime(automatic_end),
-            format_datetime(session.started_at),
-            format_datetime(session.completed_end()?),
-            format_duration(session.duration_seconds_at(now)),
-            session.id
-        ),
-        EndOutcome::AlreadyInactive(Some(session)) => format!(
-            "現在、活動中の記録はない。\n\n直近の活動:\n{} ～ {}\n活動時間: {}\n記録ID: #{}",
-            format_datetime(session.started_at),
-            format_datetime(session.completed_end()?),
-            format_duration(session.duration_seconds_at(now)),
-            session.id
-        ),
-        EndOutcome::AlreadyInactive(None) => {
-            "現在、活動中の記録はない。\n過去の活動記録も存在しない。".into()
-        }
-    };
+    .await?;
+    let content = crate::presentation::end_outcome(&outcome, now)?;
     send_response(ctx, content).await
 }
 

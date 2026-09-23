@@ -31,7 +31,7 @@ python scripts/check-boundaries.py
 ## Pull Request
 
 - 変更理由、利用者への影響、検証結果を記載してください。
-- schema変更は既存migrationを編集せず、新しい連番migrationを追加してください。
+- 既存環境のない試作段階では後方互換を保証せず、schemaを `migrations/0001_initial_schema.sql` に統合する。新規DBの生成・制約・queryのschema検査をテストする。実DBの自動削除や暗黙の変換は行わない。データを維持する運用を開始した後は初期migrationを固定し、以降の変更を連番で追加する。
 - 時刻境界、DB競合、個人情報、CSV/PDF出力に関わる変更にはテストを追加してください。
 - 公開APIや運用方法を変える場合はREADME、仕様書、`.env.example`も更新してください。
 - テキストファイルはUTF-8で保存してください。
