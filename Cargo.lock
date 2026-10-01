@@ -1748,9 +1748,9 @@ dependencies = [
 
 [[package]]
 name = "printpdf"
-version = "0.11.3"
+version = "0.12.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a379adaffd3cd62de1bbbee11ae8f15a7fffcd595a6c58964fcc2e1f98ce9979"
+checksum = "95d50369c5e18e18d4716bd855172db3a70f9e82c966687ae051ea58138f285c"
 dependencies = [
  "allsorts-azul",
  "base64",
